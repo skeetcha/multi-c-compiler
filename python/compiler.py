@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
 import sys
-from xml.dom.expatbuilder import parseFragmentString
 
 @dataclass
 class Token:
