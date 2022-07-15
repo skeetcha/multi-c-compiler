@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::fs::File;
 
 #[derive(Clone)]
@@ -37,6 +37,7 @@ impl Token {
     }
 }
 
+#[derive(Clone)]
 enum ASTNodeType {
     Add,
     Subtract,
@@ -57,6 +58,7 @@ impl std::fmt::Display for ASTNodeType {
     }
 }
 
+#[derive(Clone)]
 struct ASTNode {
     op: ASTNodeType,
     left: Option<Box<ASTNode>>,
@@ -86,7 +88,10 @@ struct Compiler {
     line: i64,
     in_data: Vec<u8>,
     index: usize,
-    token: Token
+    token: Token,
+    out_file: File,
+    free_reg: [i32; 4],
+    reg_list: [String; 4]
 }
 
 fn chrpos(s: &str, c: char) -> i64 {
@@ -204,13 +209,17 @@ impl Compiler {
         let metadata = std::fs::metadata(filename).expect("unable to read metadata");
         let mut buffer = vec![0; metadata.len() as usize];
         f.read(&mut buffer).expect("buffer overflow");
+        let mut out_file = File::create("out.s").expect("unable to open out.s");
 
         Self {
             line: 1,
             putback: '\n',
             in_data: buffer.to_owned(),
             index: 0,
-            token: Token::Eof
+            token: Token::Eof,
+            out_file: out_file,
+            free_reg: [0i32; 4],
+            reg_list: ["%r8".into(), "%r9".into(), "%r10".into(), "%r11".into()]
         }
     }
 
@@ -293,6 +302,103 @@ impl Compiler {
             ASTNodeType::IntLit(val) => val,
         }
     }
+
+    fn gen_ast(&mut self, node: ASTNode) -> i64 {
+        let mut left_reg: i64 = 0;
+        let mut right_reg: i64 = 0;
+
+        if let Some(left_node) = node.left {
+            left_reg = self.gen_ast(*left_node);
+        }
+
+        if let Some(right_node) = node.right {
+            right_reg = self.gen_ast(*right_node);
+        }
+
+        match node.op {
+            ASTNodeType::Add => self.cg_add(left_reg, right_reg),
+            ASTNodeType::Subtract => self.cg_sub(left_reg, right_reg),
+            ASTNodeType::Multiply => self.cg_mul(left_reg, right_reg),
+            ASTNodeType::Divide => self.cg_div(left_reg, right_reg),
+            ASTNodeType::IntLit(val) => self.cg_load(val),
+        }
+    }
+
+    fn cg_add(&mut self, left_reg: i64, right_reg: i64) -> i64 {
+        self.out_file.write_all(&(&format!("\taddq\t{}, {}\n", self.reg_list[left_reg as usize], self.reg_list[right_reg as usize])).as_bytes()).expect("Couldn't write to out file");
+        self.free_register(left_reg);
+        right_reg
+    }
+
+    fn cg_sub(&mut self, left_reg: i64, right_reg: i64) -> i64 {
+        self.out_file.write_all(&(&format!("\tsubq\t{}, {}\n", self.reg_list[right_reg as usize], self.reg_list[left_reg as usize])).as_bytes()).expect("Couldn't write to out file");
+        self.free_register(right_reg);
+        left_reg
+    }
+    
+    fn cg_mul(&mut self, left_reg: i64, right_reg: i64) -> i64 {
+        self.out_file.write_all(&(&format!("\timulq\t{}, {}\n", self.reg_list[left_reg as usize], self.reg_list[right_reg as usize])).as_bytes()).expect("Couldn't write to out file");
+        self.free_register(left_reg);
+        right_reg
+    }
+
+    fn cg_div(&mut self, left_reg: i64, right_reg: i64) -> i64 {
+        self.out_file.write_all(&(&format!("\tmovq\t{},%rax\n\tcqo\n\tidivq\t{}\n\tmovq\t%rax,{}\n", self.reg_list[left_reg as usize], self.reg_list[right_reg as usize], self.reg_list[left_reg as usize])).as_bytes()).expect("Couldn't write to out file");
+        self.free_register(right_reg);
+        left_reg
+    }
+
+    fn cg_load(&mut self, val: i64) -> i64 {
+        let r = self.alloc_register();
+        self.out_file.write_all(&(&format!("\tmovq\t${}, {}\n", val, self.reg_list[r as usize])).as_bytes()).expect("Couldn't write to out file");
+        r
+    }
+
+    fn generate_code(&mut self, node: ASTNode) {
+        self.cg_preamble();
+        let reg = self.gen_ast(node);
+        self.cg_printint(reg);
+        self.cg_postamble();
+    }
+
+    fn cg_preamble(&mut self) {
+        self.free_all_registers();
+        self.out_file.write_all(&("\t.text\n.LC0:\n\t.string\t\"%d\\n\"\nprintint:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$16, %rsp\n\tmovl\t%edi, -4(%rbp)\n\tmovl\t-4(%rbp), %eax\n\tmovl\t%eax, %esi\n\tleaq\t.LC0(%rip), %rdi\n\tmovl\t$0, %eax\n\tcall\tprintf@PLT\n\tnop\n\tleave\n\tret\n\n\t.globl\tmain\n\t.type\tmain, @function\nmain:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n").as_bytes()).expect("Couldn't write to out file");
+    }
+
+    fn cg_printint(&mut self, reg: i64) {
+        self.out_file.write_all(&(&format!("\tmovq\t{}, %rdi\n\tcall\tprintint\n", self.reg_list[reg as usize])).as_bytes()).expect("Couldn't write to out file");
+        self.free_register(reg);
+    }
+
+    fn cg_postamble(&mut self) {
+        self.out_file.write_all(&("\tmovl\t$0, %eax\n\tpopq\t%rbp\n\tret\n").as_bytes()).expect("Couldn't write to out file");
+    }
+
+    fn free_all_registers(&mut self) {
+        for i in 0..4 {
+            self.free_reg[i] = 1;
+        }
+    }
+
+    fn alloc_register(&mut self) -> i64 {
+        for i in 0..4 {
+            if self.free_reg[i] != 0 {
+                self.free_reg[i] = 0;
+                return i as i64;
+            }
+        }
+
+        panic!("Out of registers!");
+    }
+
+    fn free_register(&mut self, reg: i64) {
+        if self.free_reg[reg as usize] != 0 {
+            panic!("Error trying to free register {}", reg);
+        }
+
+        self.free_reg[reg as usize] = 1;
+    }
 }
 
 fn usage(prog: String) {
@@ -310,5 +416,6 @@ fn main() {
     let mut compiler = Compiler::new(&args[1]);
     compiler.scan();
     let node = compiler.binexpr(0);
-    println!("{}", Compiler::interpret_ast(node));
+    println!("{}", Compiler::interpret_ast(node.clone()));
+    compiler.generate_code(node);
 }
