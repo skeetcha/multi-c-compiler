@@ -19,6 +19,8 @@ int chrpos(const char* s, char c) {
     return (p ? p - s : -1);
 }
 
+const int opPrec[] = {0, 10, 10, 20, 20, 0};
+
 char Compiler::next() {
     char c;
 
@@ -135,17 +137,26 @@ ASTNode* Compiler::primary() {
     }
 }
 
-ASTNode* Compiler::binexpr() {
+ASTNode* Compiler::binexpr(int ptp) {
     ASTNode* left = primary();
+    TokenType tokenType = token.type;
 
     if (token.type == T_EOF) {
         return left;
     }
 
-    ASTNodeType nodeType = arithop(token.type);
-    scan();
-    ASTNode* right = binexpr();
-    return new ASTNode(nodeType, left, right, 0);
+    while (op_precedence(tokenType) > ptp) {
+        scan();
+        ASTNode* right = binexpr(opPrec[tokenType]);
+        left = new ASTNode(arithop(tokenType), left, right, 0);
+        tokenType = token.type;
+
+        if (tokenType == TokenType::T_EOF) {
+            return left;
+        }
+    }
+
+    return left;
 }
 
 int Compiler::interpretAST(ASTNode* node) {
@@ -184,4 +195,15 @@ int Compiler::interpretAST(ASTNode* node) {
             cerr << "Unknown AST operator " << node->op << endl;
             exit(1);
     }
+}
+
+int Compiler::op_precedence(TokenType tok) {
+    int prec = opPrec[tok];
+
+    if (prec == 0) {
+        cerr << "syntax error on line " << line << ", token " << tok << endl;
+        exit(1);
+    }
+
+    return prec;
 }

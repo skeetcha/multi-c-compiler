@@ -20,9 +20,10 @@ private:
     int scanint(char c);
     ASTNodeType arithop(TokenType tok);
     ASTNode* primary();
+    int op_precedence(TokenType tok);
 public:
     Compiler(string filename);
     bool scan();
-    ASTNode* binexpr();
+    ASTNode* binexpr(int ptp);
     int interpretAST(ASTNode* node);
 };

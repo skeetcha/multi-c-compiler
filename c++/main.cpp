@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
 
     Compiler compiler(argv[1]);
     compiler.scan();
-    ASTNode* node = compiler.binexpr();
+    ASTNode* node = compiler.binexpr(0);
     cout << compiler.interpretAST(node) << endl;
     delete node;
     return 0;
