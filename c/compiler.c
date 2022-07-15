@@ -5,6 +5,8 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "astNodeType.h"
+#include "astNode.h"
 
 int chrpos(const char* s, char c) {
     char* p = strchr(s, c);
@@ -41,28 +43,29 @@ char Compiler_skip(Compiler* comp) {
     return c;
 }
 
-bool Compiler_scan(Compiler* comp, Token* token) {
+bool Compiler_scan(Compiler* comp) {
     char c = Compiler_skip(comp);
 
     switch (c) {
         case '\0':
+            comp->token.type = T_EOF;
             return false;
         case '+':
-            token->type = T_PLUS;
+            comp->token.type = T_PLUS;
             break;
         case '-':
-            token->type = T_MINUS;
+            comp->token.type = T_MINUS;
             break;
         case '*':
-            token->type = T_STAR;
+            comp->token.type = T_STAR;
             break;
         case '/':
-            token->type = T_SLASH;
+            comp->token.type = T_SLASH;
             break;
         default:
             if (isdigit(c)) {
-                token->intValue = Compiler_scanint(comp, c);
-                token->type = T_INTLIT;
+                comp->token.intValue = Compiler_scanint(comp, c);
+                comp->token.type = T_INTLIT;
                 break;
             }
 
@@ -97,17 +100,83 @@ Compiler Compiler_new(char* filename) {
     return comp;
 }
 
-void Compiler_scanfile(Compiler* comp) {
-    Token t;
-    const char* tokstr[] = {"+", "-", "*", "/", "intlit"};
+ASTNodeType Compiler_arithop(Compiler* comp, TokenType tok) {
+    switch (tok) {
+        case T_PLUS:
+            return A_ADD;
+        case T_MINUS:
+            return A_SUBTRACT;
+        case T_STAR:
+            return A_MULTIPLY;
+        case T_SLASH:
+            return A_DIVIDE;
+        default:
+            fprintf(stderr, "unknown token in arithop() on line %d\n", comp->line);
+            exit(1);
+    }
+}
 
-    while (Compiler_scan(comp, &t)) {
-        printf("Token %s", tokstr[t.type]);
+ASTNode* Compiler_primary(Compiler* comp) {
+    ASTNode* node;
 
-        if (t.type == T_INTLIT) {
-            printf(", value %d", t.intValue);
-        }
+    switch (comp->token.type) {
+        case T_INTLIT:
+            node = mkAstLeaf(A_INTLIT, comp->token.intValue);
+            Compiler_scan(comp);
+            return node;
+        default:
+            fprintf(stderr, "syntax error on line %d\n", comp->line);
+            exit(1);
+    }
+}
 
-        printf("\n");
+ASTNode* Compiler_binexpr(Compiler* comp) {
+    ASTNode* left = Compiler_primary(comp);
+
+    if (comp->token.type == T_EOF) {
+        return left;
+    }
+
+    ASTNodeType nodeType = Compiler_arithop(comp, comp->token.type);
+    Compiler_scan(comp);
+    ASTNode* right = Compiler_binexpr(comp);
+    return mkAstNode(nodeType, left, right, 0);
+}
+
+int Compiler_interpretAST(Compiler* comp, ASTNode* node) {
+    int leftVal, rightVal;
+
+    if (node->left) {
+        leftVal = Compiler_interpretAST(comp, node->left);
+        free(node->left);
+    }
+
+    if (node->right) {
+        rightVal = Compiler_interpretAST(comp, node->right);
+        free(node->right);
+    }
+
+    const char* astop[] = {"+", "-", "*", "/"};
+
+    if (node->op == A_INTLIT) {
+        printf("int %d\n", node->intValue);
+    } else {
+        printf("%d %s %d\n", leftVal, astop[node->op], rightVal);
+    }
+
+    switch (node->op) {
+        case A_ADD:
+            return leftVal + rightVal;
+        case A_SUBTRACT:
+            return leftVal - rightVal;
+        case A_MULTIPLY:
+            return leftVal * rightVal;
+        case A_DIVIDE:
+            return leftVal / rightVal;
+        case A_INTLIT:
+            return node->intValue;
+        default:
+            fprintf(stderr, "Unknown AST operator %d\n", node->op);
+            exit(1);
     }
 }
