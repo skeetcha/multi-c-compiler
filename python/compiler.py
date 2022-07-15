@@ -31,6 +31,9 @@ class ASTNodeType(Enum):
     Divide   = 3
     IntLit   = 4
 
+regList = ['%r8', '%r9', '%r10', '%r11']
+freeReg = []
+
 class ASTNode:
     def __init__(self, op, left, right, intValue):
         assertTypes([(op, [ASTNodeType, None], 'op'), (left, [ASTNode, None], 'left'), (right, [ASTNode, None], 'right'), (intValue, [int], 'intValue')])
@@ -54,6 +57,7 @@ class Compiler:
         self.line = 1
         self.token = Token(TokenType.T_EOF, 0)
         self.opPrec = [0, 10, 10, 20, 20, 0]
+        self.outFile = None
 
     def next(self):
         c = '\0'
@@ -204,6 +208,30 @@ class Compiler:
             print('Unknown AST operator %d' % node.op.value, file=sys.stderr)
             sys.exit(1)
     
+    def genAST(self, node):
+        leftReg = None
+        rightReg = None
+
+        if node.left != None:
+            leftReg = self.genAST(node.left)
+        
+        if node.right != None:
+            rightReg = self.genAST(node.right)
+        
+        if node.op == ASTNodeType.Add:
+            return self.cgadd(leftReg, rightReg)
+        elif node.op == ASTNodeType.Subtract:
+            return self.cgsub(leftReg, rightReg)
+        elif node.op == ASTNodeType.Multiply:
+            return self.cgmul(leftReg, rightReg)
+        elif node.op == ASTNodeType.Divide:
+            return self.cgdiv(leftReg, rightReg)
+        elif node.op == ASTNodeType.IntLit:
+            return self.cgload(node.intValue)
+        else:
+            print('Unknown AST operator %d' % node.op.value, file=sys.stderr)
+            sys.exit(1)
+    
     def opPrecedence(self, tokenType):
         prec = self.opPrec[tokenType.value]
 
@@ -230,6 +258,97 @@ class Compiler:
                 return left
         
         return left
+    
+    def cgadd(self, r1, r2):
+        self.outFile.write('\taddq\t%s, %s\n' % (regList[r1], regList[r2]))
+        self.free_register(r1)
+        return r2
+    
+    def cgsub(self, r1, r2):
+        self.outFile.write('\tsubq\t%s, %s\n' % (regList[r2], regList[r1]))
+        self.free_register(r2)
+        return r1
+
+    def cgmul(self, r1, r2):
+        self.outFile.write('\timulq\t%s, %s\n' % (regList[r1], regList[r2]))
+        self.free_register(r1)
+        return r2
+
+    def cgdiv(self, r1, r2):
+        self.outFile.write('\tmovq\t%s,%%rax\n' % regList[r1])
+        self.outFile.write('\tcqo\n')
+        self.outFile.write('\tidivq\t%s\n' % regList[r2])
+        self.outFile.write('\tmovq\t%%rax,%s\n' % regList[r1])
+        self.free_register(r2)
+        return r1
+
+    def cgload(self, val):
+        r = self.alloc_register()
+        self.outFile.write('\tmovq\t$%d, %s\n' % (val, regList[r]))
+        return r
+    
+    def alloc_register(self):
+        for i in range(4):
+            if freeReg[i]:
+                freeReg[i] = 0
+                return i
+        
+        print('Out of registers!', file=sys.stderr)
+        sys.exit(1)
+    
+    def free_register(self, reg):
+        if freeReg[reg] != 0:
+            print('Error trying to free register %d' % reg, file=sys.stderr)
+            sys.exit(1)
+        
+        freeReg[reg] = 1
+
+    def cgprintint(self, r):
+        self.outFile.write('\tmovq\t%s, %%rdi\n' % regList[r])
+        self.outFile.write('\tcall\tprintint\n')
+        self.free_register(r)
+    
+    def generateCode(self, node):
+        self.cgpreamble()
+        reg = self.genAST(node)
+        self.cgprintint(reg)
+        self.cgpostamble()
+    
+    def cgpreamble(self):
+        self.free_all_registers()
+        self.outFile.write('\t.text\n'
+            + '.LC0:\n'
+            + '\t.string\t"%d\\n"\n'
+            + 'printint:\n'
+            + '\tpushq\t%rbp\n'
+            + '\tmovq\t%rsp, %rbp\n'
+            + '\tsubq\t$16, %rsp\n'
+            + '\tmovl\t%edi, -4(%rbp)\n'
+            + '\tmovl\t-4(%rbp), %eax\n'
+            + '\tmovl\t%eax, %esi\n'
+            + '\tleaq\t.LC0(%rip), %rdi\n'
+            + '\tmovl $0, %eax\n'
+            + '\tcall printf@PLT\n'
+            + '\tnop\n'
+            + '\tleave\n'
+            + '\tret\n'
+            + '\n'
+            + '\t.globl\tmain\n'
+            + '\t.type\tmain, @function\n'
+            + 'main:\n'
+            + '\tpushq\t%rbp\n'
+            + '\tmovq\t%rsp, %rbp\n')
+
+    def cgpostamble(self):
+        self.outFile.write(
+            '\tmovl\t$0, %eax\n'
+            + '\tpopq\t%rbp\n'
+            + '\tret\n'
+        )
+
+    def free_all_registers(self):
+        global freeReg
+        freeReg = [1 for i in range(4)]
 
 tokstr = ['+', '-', '*', '/', 'intlit']
 
@@ -243,10 +362,13 @@ def main():
     
     compiler = Compiler()
     compiler.inFile = open(sys.argv[1], 'r')
+    compiler.outFile = open('out.s', 'w')
     compiler.scan()
     node = compiler.binexpr(0)
     print('%d' % compiler.interpretAST(node))
+    compiler.generateCode(node)
     compiler.inFile.close()
+    compiler.outFile.close()
 
 if __name__ == '__main__':
     main()
