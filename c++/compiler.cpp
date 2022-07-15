@@ -38,7 +38,7 @@ char Compiler::next() {
 }
 
 char Compiler::skip() {
-    int c = next();
+    char c = next();
 
     while ((c == ' ') || (c == '\t') || (c == '\n') || (c == '\r') || (c == '\f')) {
         c = next();
