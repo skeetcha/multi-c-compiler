@@ -24,6 +24,19 @@ impl std::fmt::Display for Token {
     }
 }
 
+impl Token {
+    fn op_prec(&self) -> u32 {
+        match self {
+            Self::Eof => 0,
+            Self::Plus => 10,
+            Self::Minus => 10,
+            Self::Star => 20,
+            Self::Slash => 20,
+            Self::IntLit(_) => 0
+        }
+    }
+}
+
 enum ASTNodeType {
     Add,
     Subtract,
@@ -222,17 +235,36 @@ impl Compiler {
         }
     }
 
-    fn binexpr(&mut self) -> ASTNode {
-        let left = self.primary();
+    fn check_bin_op(&self, tok: Token) -> u32 {
+        let prec = tok.op_prec();
 
-        if let Token::Eof = self.token {
+        if prec == 0 {
+            panic!("syntax error on line {}, token {}", self.line, tok);
+        }
+
+        return prec;
+    }
+
+    fn binexpr(&mut self, ptp: u32) -> ASTNode {
+        let mut left = self.primary();
+        let mut token = self.token.clone();
+
+        if let Token::Eof = token {
             return left;
         }
 
-        let node_type = self.arithop(self.token.clone());
-        self.scan();
-        let right = self.binexpr();
-        ASTNode::mkASTNode(node_type, Some(Box::new(left)), Some(Box::new(right)))
+        while self.check_bin_op(token.clone()) > ptp {
+            self.scan();
+            let right = self.binexpr(token.op_prec());
+            left = ASTNode::mkASTNode(self.arithop(token), Some(Box::new(left)), Some(Box::new(right)));
+            token = self.token.clone();
+
+            if let Token::Eof = token {
+                return left;
+            }
+        }
+
+        left
     }
 
     fn interpret_ast(node: ASTNode) -> i64 {
@@ -277,6 +309,6 @@ fn main() {
 
     let mut compiler = Compiler::new(&args[1]);
     compiler.scan();
-    let node = compiler.binexpr();
+    let node = compiler.binexpr(0);
     println!("{}", Compiler::interpret_ast(node));
 }
