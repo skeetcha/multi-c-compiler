@@ -53,6 +53,7 @@ class Compiler:
         self.inFile = None
         self.line = 1
         self.token = Token(TokenType.T_EOF, 0)
+        self.opPrec = [0, 10, 10, 20, 20, 0]
 
     def next(self):
         c = '\0'
@@ -137,18 +138,41 @@ class Compiler:
             print('syntax error on line %d' % self.line, file=sys.stderr)
             sys.exit(1)
     
-    def binexpr(self):
-        left = self.primary()
-        right = None
-        nodeType = None
+    def additive_expr(self):
+        left = self.multiplicative_expr()
+        tokenType = self.token.type
 
-        if self.token.type == TokenType.T_EOF:
+        if tokenType == TokenType.T_EOF:
             return left
         
-        nodeType = self.arithop(self.token.type)
-        self.scan()
-        right = self.binexpr()
-        return ASTNode(nodeType, left, right, 0)
+        while True:
+            self.scan()
+            right = self.multiplicative_expr()
+            left = ASTNode(self.arithop(tokenType), left, right, 0)
+            tokenType = self.token.type
+
+            if tokenType == TokenType.T_EOF:
+                break
+        
+        return left
+    
+    def multiplicative_expr(self):
+        left = self.primary()
+        tokenType = self.token.type
+
+        if tokenType == TokenType.T_EOF:
+            return left
+        
+        while (tokenType == TokenType.Star) or (tokenType == TokenType.Slash):
+            self.scan()
+            right = self.primary()
+            left = ASTNode(self.arithop(tokenType), left, right, 0)
+            tokenType = self.token.type
+
+            if tokenType == TokenType.T_EOF:
+                break
+        
+        return left
     
     def interpretAST(self, node):
         leftVal = None
@@ -179,6 +203,33 @@ class Compiler:
         else:
             print('Unknown AST operator %d' % node.op.value, file=sys.stderr)
             sys.exit(1)
+    
+    def opPrecedence(self, tokenType):
+        prec = self.opPrec[tokenType.value]
+
+        if prec == 0:
+            print('syntax error on line %d, token %d' % (self.line, tokenType.value), file=sys.stderr)
+            sys.exit(1)
+        
+        return prec
+    
+    def binexpr(self, ptp):
+        left = self.primary()
+        tokenType = self.token.type
+
+        if tokenType == TokenType.T_EOF:
+            return left
+        
+        while self.opPrecedence(tokenType) > ptp:
+            self.scan()
+            right = self.binexpr(self.opPrec[tokenType.value])
+            left = ASTNode(self.arithop(tokenType), left, right, 0)
+            tokenType = self.token.type
+
+            if tokenType == TokenType.T_EOF:
+                return left
+        
+        return left
 
 tokstr = ['+', '-', '*', '/', 'intlit']
 
@@ -193,7 +244,7 @@ def main():
     compiler = Compiler()
     compiler.inFile = open(sys.argv[1], 'r')
     compiler.scan()
-    node = compiler.binexpr()
+    node = compiler.binexpr(0)
     print('%d' % compiler.interpretAST(node))
     compiler.inFile.close()
 
