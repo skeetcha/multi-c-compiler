@@ -1,7 +1,9 @@
 use std::io::Read;
 use std::fs::File;
 
+#[derive(Clone)]
 enum Token {
+    Eof,
     Plus,
     Minus,
     Star,
@@ -12,6 +14,7 @@ enum Token {
 impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
+            Token::Eof => write!(f, "Token EOF"),
             Token::Plus => write!(f, "Token +"),
             Token::Minus => write!(f, "Token -"),
             Token::Star => write!(f, "Token *"),
@@ -21,11 +24,56 @@ impl std::fmt::Display for Token {
     }
 }
 
+enum ASTNodeType {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    IntLit(i64)
+}
+
+impl std::fmt::Display for ASTNodeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ASTNodeType::Add => write!(f, "+"),
+            ASTNodeType::Subtract => write!(f, "-"),
+            ASTNodeType::Multiply => write!(f, "*"),
+            ASTNodeType::Divide => write!(f, "/"),
+            ASTNodeType::IntLit(val) => write!(f, "int {}", val)
+        }
+    }
+}
+
+struct ASTNode {
+    op: ASTNodeType,
+    left: Option<Box<ASTNode>>,
+    right: Option<Box<ASTNode>>
+}
+
+impl ASTNode {
+    fn mkASTNode(op: ASTNodeType, left: Option<Box<ASTNode>>, right: Option<Box<ASTNode>>) -> Self {
+        Self {
+            op: op,
+            left: left,
+            right: right
+        }
+    }
+
+    fn mkAstLeaf(op: ASTNodeType) -> Self {
+        Self::mkASTNode(op, None, None)
+    }
+
+    fn mkAstUnary(op: ASTNodeType, left: Box<ASTNode>) -> Self {
+        Self::mkASTNode(op, Some(left), None)
+    }
+}
+
 struct Compiler {
     putback: char,
     line: i64,
     in_data: Vec<u8>,
-    index: usize
+    index: usize,
+    token: Token
 }
 
 fn chrpos(s: &str, c: char) -> i64 {
@@ -86,37 +134,40 @@ impl Compiler {
         }
     }
 
-    fn scan(&mut self, token: &mut Token) -> bool {
+    fn scan(&mut self) -> bool {
         let c: Option<char> = self.skip();
 
         match c {
             Some(cval) => match cval {
                 '+' => {
-                    *token = Token::Plus;
+                    self.token = Token::Plus;
                     true
                 },
                 '-' => {
-                    *token = Token::Minus;
+                    self.token = Token::Minus;
                     true
                 },
                 '*' => {
-                    *token = Token::Star;
+                    self.token = Token::Star;
                     true
                 },
                 '/' => {
-                    *token = Token::Slash;
+                    self.token = Token::Slash;
                     true
                 },
                 _ => {
                     if cval.is_digit(10) {
-                        *token = Token::IntLit(self.scanint(cval));
+                        self.token = Token::IntLit(self.scanint(cval));
                         true
                     } else {
                         panic!("Unrecognized character {} on line {}", c.unwrap_or('\0'), self.line);
                     }
                 }
             },
-            None => false
+            None => {
+                self.token = Token::Eof;
+                false
+            }
         }
     }
 
@@ -135,14 +186,6 @@ impl Compiler {
         return val;
     }
 
-    fn scanfile(&mut self) {
-        let mut token: Token = Token::Plus;
-
-        while self.scan(&mut token) {
-            println!("{}", token);
-        }
-    }
-
     fn new(filename: &str) -> Self {
         let mut f = File::open(filename).expect("no file found");
         let metadata = std::fs::metadata(filename).expect("unable to read metadata");
@@ -153,7 +196,69 @@ impl Compiler {
             line: 1,
             putback: '\n',
             in_data: buffer.to_owned(),
-            index: 0
+            index: 0,
+            token: Token::Eof
+        }
+    }
+
+    fn arithop(&self, token: Token) -> ASTNodeType {
+        match token {
+            Token::Plus => ASTNodeType::Add,
+            Token::Minus => ASTNodeType::Subtract,
+            Token::Star => ASTNodeType::Multiply,
+            Token::Slash => ASTNodeType::Divide,
+            _ => panic!("unknown token in arithop() on line {}", self.line)
+        }
+    }
+
+    fn primary(&mut self) -> ASTNode {
+        match self.token {
+            Token::IntLit(val) => {
+                let node = ASTNode::mkAstLeaf(ASTNodeType::IntLit(val));
+                self.scan();
+                node
+            },
+            _ => panic!("syntax error on line {}", self.line)
+        }
+    }
+
+    fn binexpr(&mut self) -> ASTNode {
+        let left = self.primary();
+
+        if let Token::Eof = self.token {
+            return left;
+        }
+
+        let node_type = self.arithop(self.token.clone());
+        self.scan();
+        let right = self.binexpr();
+        ASTNode::mkASTNode(node_type, Some(Box::new(left)), Some(Box::new(right)))
+    }
+
+    fn interpret_ast(node: ASTNode) -> i64 {
+        let mut left_val: i64 = 0;
+        let mut right_val: i64 = 0;
+
+        if let Some(left_node) = node.left {
+            left_val = Self::interpret_ast(*left_node);
+        }
+
+        if let Some(right_node) = node.right {
+            right_val = Self::interpret_ast(*right_node);
+        }
+
+        if let ASTNodeType::IntLit(val) = node.op {
+            println!("int {}", val);
+        } else {
+            println!("{} {} {}", left_val, node.op, right_val);
+        }
+
+        match node.op {
+            ASTNodeType::Add => left_val + right_val,
+            ASTNodeType::Subtract => left_val - right_val,
+            ASTNodeType::Multiply => left_val * right_val,
+            ASTNodeType::Divide => left_val / right_val,
+            ASTNodeType::IntLit(val) => val,
         }
     }
 }
@@ -171,5 +276,7 @@ fn main() {
     }
 
     let mut compiler = Compiler::new(&args[1]);
-    compiler.scanfile();
+    compiler.scan();
+    let node = compiler.binexpr();
+    println!("{}", Compiler::interpret_ast(node));
 }
