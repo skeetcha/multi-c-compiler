@@ -1,4 +1,5 @@
 from enum import Enum
+from platform import node
 import sys
 
 def assertTypes(typeList):
@@ -16,17 +17,42 @@ class Token:
         self.intValue = intValue
 
 class TokenType(Enum):
-    Plus   = 0
-    Minus  = 1
-    Star   = 2
-    Slash  = 3
-    IntLit = 4
+    T_EOF  = 0
+    Plus   = 1
+    Minus  = 2
+    Star   = 3
+    Slash  = 4
+    IntLit = 5
+
+class ASTNodeType(Enum):
+    Add      = 0
+    Subtract = 1
+    Multiply = 2
+    Divide   = 3
+    IntLit   = 4
+
+class ASTNode:
+    def __init__(self, op, left, right, intValue):
+        assertTypes([(op, [ASTNodeType, None], 'op'), (left, [ASTNode, None], 'left'), (right, [ASTNode, None], 'right'), (intValue, [int], 'intValue')])
+        self.op = op
+        self.left = left
+        self.right = right
+        self.intValue = intValue
+    
+    @staticmethod
+    def makeLeaf(op, intValue):
+        return ASTNode(op, None, None, intValue)
+    
+    @staticmethod
+    def makeUnary(op, left, intValue):
+        return ASTNode(op, left, None, intValue)
 
 class Compiler:
     def __init__(self):
         self.putback = '\n'
         self.inFile = None
         self.line = 1
+        self.token = Token(TokenType.T_EOF, 0)
 
     def next(self):
         c = '\0'
@@ -51,24 +77,24 @@ class Compiler:
         
         return c
     
-    def scan(self, token):
-        assertTypes([(token, [Token], 'token')])
+    def scan(self):
         c = self.skip()
 
         if c == '':
+            self.token.type = TokenType.T_EOF
             return False
         elif c == '+':
-            token.type = TokenType.Plus
+            self.token.type = TokenType.Plus
         elif c == '-':
-            token.type = TokenType.Minus
+            self.token.type = TokenType.Minus
         elif c == '*':
-            token.type = TokenType.Star
+            self.token.type = TokenType.Star
         elif c == '/':
-            token.type = TokenType.Slash
+            self.token.type = TokenType.Slash
         else:
             if c.isdigit():
-                token.intValue = self.scanint(c)
-                token.type = TokenType.IntLit
+                self.token.intValue = self.scanint(c)
+                self.token.type = TokenType.IntLit
             else:
                 print('Unrecognized character %s on line %d' % (c, self.line), file=sys.stderr)
                 sys.exit(1)
@@ -87,16 +113,72 @@ class Compiler:
         self.putback = c
         return val
     
-    def scanfile(self):
-        t = Token(None, 0)
-        
-        while self.scan(t):
-            print('Token %s' % tokstr[t.type.value], end='')
+    def arithop(self, tok):
+        if tok == TokenType.Plus:
+            return ASTNodeType.Add
+        elif tok == TokenType.Minus:
+            return ASTNodeType.Subtract
+        elif tok == TokenType.Star:
+            return ASTNodeType.Multiply
+        elif tok == TokenType.Slash:
+            return ASTNodeType.Divide
+        else:
+            print('unknown token in arithop() on line %d' % self.line, file=sys.stderr)
+            sys.exit(1)
+    
+    def primary(self):
+        node = ASTNode(ASTNodeType.Add, None, None, 0)
 
-            if t.type == TokenType.IntLit:
-                print(', value %d' % t.intValue, end='')
-            
-            print('')
+        if self.token.type == TokenType.IntLit:
+            node = ASTNode.makeLeaf(ASTNodeType.IntLit, self.token.intValue)
+            self.scan()
+            return node
+        else:
+            print('syntax error on line %d' % self.line, file=sys.stderr)
+            sys.exit(1)
+    
+    def binexpr(self):
+        left = self.primary()
+        right = None
+        nodeType = None
+
+        if self.token.type == TokenType.T_EOF:
+            return left
+        
+        nodeType = self.arithop(self.token.type)
+        self.scan()
+        right = self.binexpr()
+        return ASTNode(nodeType, left, right, 0)
+    
+    def interpretAST(self, node):
+        leftVal = None
+        rightVal = None
+        astop = ['+', '-', '*', '/']
+
+        if node.left != None:
+            leftVal = self.interpretAST(node.left)
+        
+        if node.right != None:
+            rightVal = self.interpretAST(node.right)
+        
+        if node.op == ASTNodeType.IntLit:
+            print('int %d' % node.intValue)
+        else:
+            print('%d %s %d' % (leftVal, astop[node.op.value], rightVal))
+        
+        if node.op == ASTNodeType.Add:
+            return leftVal + rightVal
+        elif node.op == ASTNodeType.Subtract:
+            return leftVal - rightVal
+        elif node.op == ASTNodeType.Multiply:
+            return leftVal * rightVal
+        elif node.op == ASTNodeType.Divide:
+            return leftVal // rightVal
+        elif node.op == ASTNodeType.IntLit:
+            return node.intValue
+        else:
+            print('Unknown AST operator %d' % node.op.value, file=sys.stderr)
+            sys.exit(1)
 
 tokstr = ['+', '-', '*', '/', 'intlit']
 
@@ -110,7 +192,9 @@ def main():
     
     compiler = Compiler()
     compiler.inFile = open(sys.argv[1], 'r')
-    compiler.scanfile()
+    compiler.scan()
+    node = compiler.binexpr()
+    print('%d' % compiler.interpretAST(node))
     compiler.inFile.close()
 
 if __name__ == '__main__':
