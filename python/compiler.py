@@ -14,6 +14,28 @@ class Token:
         self.type = tokenType
         self.intValue = intValue
 
+class ASTNodeOp(Enum):
+    Add      = 0
+    Subtract = 1
+    Multiply = 2
+    Divide   = 3
+    IntLit   = 4
+
+class ASTNode:
+    def __init__(self, op, left, right, intValue):
+        self.op = op
+        self.left = left
+        self.right = right
+        self.intValue = intValue
+    
+    @staticmethod
+    def mkAstLeaf(op, intValue):
+        return ASTNode(op, None, None, intValue)
+    
+    @staticmethod
+    def mkAstUnary(op, left, intValue):
+        return ASTNode(op, left, None, intValue)
+
 class Compiler:
     def __init__(self, filename):
         self.inFile = open(filename, 'r')
@@ -87,18 +109,99 @@ class Compiler:
         
         self.putback = c
         return val
+    
+    def arithop(self, tokenType):
+        if tokenType == TokenType.Plus:
+            return ASTNodeOp.Add
+        elif tokenType == TokenType.Minus:
+            return ASTNodeOp.Subtract
+        elif tokenType == TokenType.Star:
+            return ASTNodeOp.Multiply
+        elif tokenType == TokenType.Slash:
+            return ASTNodeOp.Divide
+        else:
+            print('Invalid token on line %d' % self.line, file=sys.stderr)
+            sys.exit(1)
+    
+    def number(self):
+        if self.token.type == TokenType.IntLit:
+            node = ASTNode.mkAstLeaf(ASTNodeOp.IntLit, self.token.intValue)
+            self.scan()
+            return node
+        else:
+            print('syntax error on line %d' % self.line, file=sys.stderr)
+            sys.exit(1)
+    
+    def expr(self):
+        return self.add_expr()
+    
+    def add_expr(self):
+        left = self.mul_expr()
+        tokenType = self.token.type
+        
+        if tokenType == TokenType.T_EOF:
+            return left
+        
+        while True:
+            self.scan()
+            right = self.mul_expr()
+            left = ASTNode(self.arithop(tokenType), left, right, 0)
+            tokenType = self.token.type
+
+            if tokenType == TokenType.T_EOF:
+                break
+        
+        return left
+    
+    def mul_expr(self):
+        left = self.number()
+        tokenType = self.token.type
+
+        if tokenType == TokenType.T_EOF:
+            return left
+        
+        while (tokenType == TokenType.Star) or (tokenType == TokenType.Slash):
+            self.scan()
+            right = self.number()
+            left = ASTNode(self.arithop(tokenType), left, right, 0)
+            tokenType = self.token.type
+
+            if tokenType == TokenType.T_EOF:
+                break
+        
+        return left
+    
+    def interpretAST(self, node):
+        astop = ['+', '-', '*', '/']
+        leftVal = 0
+        rightVal = 0
+
+        if node.left != None:
+            leftVal = self.interpretAST(node.left)
+        
+        if node.right != None:
+            rightVal = self.interpretAST(node.right)
+        
+        if node.op == ASTNodeOp.IntLit:
+            print('int %d' % node.intValue)
+        else:
+            print('%d %s %d' % (leftVal, astop[node.op.value], rightVal))
+        
+        if node.op == ASTNodeOp.Add:
+            return leftVal + rightVal
+        elif node.op == ASTNodeOp.Subtract:
+            return leftVal - rightVal
+        elif node.op == ASTNodeOp.Multiply:
+            return leftVal * rightVal
+        elif node.op == ASTNodeOp.Divide:
+            return leftVal // rightVal
+        elif node.op == ASTNodeOp.IntLit:
+            return node.intValue
 
     def run(self):
-        tokstr = ['EOF', '+', '-', '*', '/', 'intlit']
-
-        while self.scan():
-            print('Token %s' % tokstr[self.token.type.value], end='')
-
-            if self.token.type == TokenType.IntLit:
-                print(', value %d' % self.token.intValue, end='')
-            
-            print('')
-
+        self.scan()
+        node = self.expr()
+        print('%d' % self.interpretAST(node))
         self.inFile.close()
 
 def usage(prog):
