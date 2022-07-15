@@ -6,4 +6,5 @@ struct Token {
     int intValue;
 
     Token(TokenType type, int intValue) : type(type), intValue(intValue) {}
+    Token() : type(TokenType::T_EOF), intValue(0) {}
 };

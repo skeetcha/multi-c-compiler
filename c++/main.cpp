@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstdlib>
 #include "compiler.hpp"
+#include "astNode.hpp"
 using namespace std;
 
 void usage(char* prog) {
@@ -14,6 +15,9 @@ int main(int argc, char* argv[]) {
     }
 
     Compiler compiler(argv[1]);
-    compiler.scanfile();
+    compiler.scan();
+    ASTNode* node = compiler.binexpr();
+    cout << compiler.interpretAST(node) << endl;
+    delete node;
     return 0;
 }

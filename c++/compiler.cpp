@@ -9,6 +9,8 @@
 #include <fstream>
 #include <sstream>
 #include <iterator>
+#include "astNodeType.hpp"
+#include "astNode.hpp"
 using namespace std;
 
 int chrpos(const char* s, char c) {
@@ -47,11 +49,13 @@ char Compiler::skip() {
     return c;
 }
 
-bool Compiler::scan(Token& token) {
+bool Compiler::scan() {
     char c = skip();
 
     switch (c) {
         case '\0':
+        case '\1':
+            token.type = TokenType::T_EOF;
             return false;
         case '+':
             token.type = TokenType::T_Plus;
@@ -101,17 +105,83 @@ Compiler::Compiler(string filename) {
     inFile.open(filename, ifstream::in);
 }
 
-void Compiler::scanfile() {
-    Token t(TokenType::T_Plus, 0);
-    const char* tokstr[] = {"+", "-", "*", "/", "intlit"};
+ASTNodeType Compiler::arithop(TokenType tok) {
+    switch (tok) {
+        case TokenType::T_Plus:
+            return ASTNodeType::A_Add;
+        case TokenType::T_Minus:
+            return ASTNodeType::A_Subtract;
+        case TokenType::T_Star:
+            return ASTNodeType::A_Multiply;
+        case TokenType::T_Slash:
+            return ASTNodeType::A_Divide;
+        default:
+            cerr << "unknown token in arithop() on line " << line << endl;
+            exit(1);
+    }
+}
 
-    while (scan(t)) {
-        cout << "Token " << tokstr[t.type];
+ASTNode* Compiler::primary() {
+    ASTNode* node;
 
-        if (t.type == TokenType::T_IntLit) {
-            cout << ", value " << t.intValue;
-        }
+    switch (token.type) {
+        case TokenType::T_IntLit:
+            node = new ASTNode(ASTNodeType::A_IntLit, token.intValue);
+            scan();
+            return node;
+        default:
+            cerr << "syntax error on line " << line << endl;
+            exit(1);
+    }
+}
 
-        cout << endl;
+ASTNode* Compiler::binexpr() {
+    ASTNode* left = primary();
+
+    if (token.type == T_EOF) {
+        return left;
+    }
+
+    ASTNodeType nodeType = arithop(token.type);
+    scan();
+    ASTNode* right = binexpr();
+    return new ASTNode(nodeType, left, right, 0);
+}
+
+int Compiler::interpretAST(ASTNode* node) {
+    int leftVal, rightVal;
+
+    if (node->left) {
+        leftVal = interpretAST(node->left);
+        delete node->left;
+    }
+
+    if (node->right) {
+        rightVal = interpretAST(node->right);
+        delete node->right;
+    }
+
+    const char* astop[] = {"+", "-", "*", "/"};
+
+    if (node->op == ASTNodeType::A_IntLit) {
+        cout << "int " << node->intValue << endl;
+    } else {
+        cout << leftVal << " " << astop[node->op] << " " << rightVal << endl;
+    }
+
+    switch (node->op) {
+        case ASTNodeType::A_Add:
+            return leftVal + rightVal;
+        case ASTNodeType::A_Subtract:
+            return leftVal - rightVal;
+        case ASTNodeType::A_Multiply:
+            return leftVal * rightVal;
+        case ASTNodeType::A_Divide:
+            return leftVal / rightVal;
+        case ASTNodeType::A_IntLit:
+            return node->intValue;
+        default:
+            cerr << "Unknown AST operator " << node->op << endl;
+            exit(1);
     }
 }

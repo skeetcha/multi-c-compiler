@@ -3,6 +3,9 @@
 #include <string>
 #include "token.hpp"
 #include <fstream>
+#include "astNodeType.hpp"
+#include "tokenType.hpp"
+#include "astNode.hpp"
 using namespace std;
 
 class Compiler {
@@ -10,12 +13,16 @@ private:
     int line;
     char putback;
     ifstream inFile;
+    Token token;
 
     char next();
     char skip();
-    bool scan(Token& token);
     int scanint(char c);
+    ASTNodeType arithop(TokenType tok);
+    ASTNode* primary();
 public:
     Compiler(string filename);
-    void scanfile();
+    bool scan();
+    ASTNode* binexpr();
+    int interpretAST(ASTNode* node);
 };
