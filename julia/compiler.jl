@@ -1,8 +1,11 @@
-@enum TokenType T_None T_Plus T_Minus T_Star T_Slash T_IntLit
+@enum TokenType T_None T_EOF T_Plus T_Minus T_Star T_Slash T_IntLit
+@enum ASTNodeType A_None A_Add A_Subtract A_Multiply A_Divide A_IntLit
 
 function TokenTypeToString(t::TokenType)
     if t == T_None
         return "None"
+    elseif t == T_EOF
+        return "EOF"
     elseif t == T_Plus
         return "+"
     elseif t == T_Minus
@@ -16,6 +19,22 @@ function TokenTypeToString(t::TokenType)
     end
 end
 
+function ASTNodeTypeToString(a::ASTNodeType)
+    if a == A_None
+        return "None"
+    elseif a == A_Add
+        return "+"
+    elseif a == A_Subtract
+        return "-"
+    elseif a == A_Multiply
+        return "*"
+    elseif a == A_Divide
+        return "/"
+    elseif a == A_IntLit
+        return "intlit"
+    end
+end
+
 mutable struct Token
     type::TokenType
     intVal::Int64
@@ -25,13 +44,33 @@ mutable struct Token
     end
 end
 
+mutable struct ASTNode
+    op::ASTNodeType
+    left::Union{ASTNode, Nothing}
+    right::Union{ASTNode, Nothing}
+    intValue::Int64
+
+    function ASTNode(op::ASTNodeType, left::Union{ASTNode, Nothing}, right::Union{ASTNode, Nothing}, intValue::Int64)
+        new(op, left, right, intValue)
+    end
+end
+
+function makeAstLeaf(op::ASTNodeType, intValue::Int64)::ASTNode
+    return ASTNode(op, nothing, nothing, intValue)
+end
+
+function makeAstUnary(op::ASTNodeType, left::ASTNode, intValue::Int64)::ASTNode
+    return ASTNode(op, left, nothing, intValue)
+end
+
 mutable struct Compiler
     line::Int64
     putback::Char
     inFile::IOStream
+    token::Token
 
     function Compiler(filename::String)
-        new(1, '\n', open(filename, "r"))
+        new(1, '\n', open(filename, "r"), Token(T_None, 0))
     end
 end
 
@@ -71,23 +110,24 @@ function compiler_skip(comp::Compiler)::Char
     return c
 end
 
-function compiler_scan(comp::Compiler, token::Token)::Bool
+function compiler_scan(comp::Compiler)::Bool
     c = compiler_skip(comp)
 
     if c == '\0'
+        comp.token.type = T_EOF
         return false
     elseif c == '+'
-        token.type = T_Plus
+        comp.token.type = T_Plus
     elseif c == '-'
-        token.type = T_Minus
+        comp.token.type = T_Minus
     elseif c == '*'
-        token.type = T_Star
+        comp.token.type = T_Star
     elseif c == '/'
-        token.type = T_Slash
+        comp.token.type = T_Slash
     else
         if isdigit(c)
-            token.type = T_IntLit
-            token.intVal = compiler_scanint(comp, c)
+            comp.token.type = T_IntLit
+            comp.token.intVal = compiler_scanint(comp, c)
         else
             line = comp.line
             throw(ErrorException("Unrecognized character $c on line $line"))
@@ -121,20 +161,83 @@ function compiler_scanint(comp::Compiler, c::Char)::Int64
     return val
 end
 
-function compiler_scanfile(comp::Compiler)
-    t = Token(T_None, 0)
+function compiler_arithop(comp::Compiler, tok::TokenType)
+    if tok == T_Plus
+        return A_Add
+    elseif tok == T_Minus
+        return A_Subtract
+    elseif tok == T_Star
+        return A_Multiply
+    elseif tok == T_Slash
+        return A_Divide
+    else
+        line = comp.line
+        println("unknown token in arithop() on line $line")
+        exit(1)
+    end
+end
 
-    while compiler_scan(comp, t)
-        typeString = TokenTypeToString(t.type)
-        value = t.intVal
+function compiler_primary(comp::Compiler)
+    node = ASTNode(A_None, nothing, nothing, 0)
 
-        print("Token $typeString")
+    if comp.token.type == T_IntLit
+        node = makeAstLeaf(A_IntLit, comp.token.intVal)
+        compiler_scan(comp)
+        return node
+    else
+        line = comp.line
+        println("syntax error on line $line")
+        exit(1)
+    end
+end
 
-        if t.type == T_IntLit
-            print("Token $value")
-        end
+function compiler_binexpr(comp::Compiler)
+    left = compiler_primary(comp)
 
-        println("")
+    if comp.token.type == T_EOF
+        return left
+    end
+
+    nodeType = compiler_arithop(comp, comp.token.type)
+    compiler_scan(comp)
+    right = compiler_binexpr(comp)
+    return ASTNode(nodeType, left, right, 0)
+end
+
+function compiler_interpretAST(comp::Compiler, node::ASTNode)::Int64
+    leftVal = nothing
+    rightVal = nothing
+
+    if node.left != nothing
+        leftVal = compiler_interpretAST(comp, node.left)
+    end
+
+    if node.right != nothing
+        rightVal = compiler_interpretAST(comp, node.right)
+    end
+
+    if node.op == A_IntLit
+        intValue = node.intValue
+        println("int $intValue")
+    else
+        op = ASTNodeTypeToString(node.op)
+        println("$leftVal $op $rightVal")
+    end
+
+    if node.op == A_Add
+        return leftVal + rightVal
+    elseif node.op == A_Subtract
+        return leftVal - rightVal
+    elseif node.op == A_Multiply
+        return leftVal * rightVal
+    elseif node.op == A_Divide
+        return floor(leftVal / rightVal)
+    elseif node.op == A_IntLit
+        return node.intValue
+    else
+        op = node.op
+        println("Unknown AST operator $op")
+        exit(1)
     end
 end
 
@@ -149,7 +252,10 @@ function main()
     end
 
     compiler = Compiler(ARGS[1])
-    compiler_scanfile(compiler)
+    compiler_scan(compiler)
+    node = compiler_binexpr(compiler)
+    result = compiler_interpretAST(compiler, node)
+    println("$result")
     close(compiler.inFile)
 end
 
