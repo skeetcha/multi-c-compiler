@@ -2,7 +2,7 @@ CC=x86_64-w64-mingw32-g++
 OUT=out/compiler.exe
 
 CFLAGS  =-std=c++17 -O3 -Wall -Wextra -Wpedantic -Wstrict-aliasing -Wno-narrowing -Wno-overflow
-LDFLAGS =-lmingw32
+LDFLAGS =-lmingw32 -static-libstdc++ -static-libgcc
 
 SRC=$(wildcard *.cpp)
 OBJ=$(SRC:.cpp=.obj)
