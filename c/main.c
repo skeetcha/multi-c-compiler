@@ -14,7 +14,7 @@ int main(int argc, char* argv[]) {
 
     Compiler compiler = Compiler_new(argv[1]);
     Compiler_scan(&compiler);
-    ASTNode* node = Compiler_binexpr(&compiler);
+    ASTNode* node = Compiler_binexpr(&compiler, 0);
     printf("%d\n", Compiler_interpretAST(&compiler, node));
     free(node);
     return 0;

@@ -13,6 +13,8 @@ int chrpos(const char* s, char c) {
     return (p ? p - s : -1);
 }
 
+const int opPrec[] = {0, 10, 10, 20, 20, 0};
+
 char Compiler_next(Compiler* comp) {
     char c;
 
@@ -130,17 +132,26 @@ ASTNode* Compiler_primary(Compiler* comp) {
     }
 }
 
-ASTNode* Compiler_binexpr(Compiler* comp) {
+ASTNode* Compiler_binexpr(Compiler* comp, int ptp) {
     ASTNode* left = Compiler_primary(comp);
+    TokenType tokenType = comp->token.type;
 
-    if (comp->token.type == T_EOF) {
+    if (tokenType == T_EOF) {
         return left;
     }
 
-    ASTNodeType nodeType = Compiler_arithop(comp, comp->token.type);
-    Compiler_scan(comp);
-    ASTNode* right = Compiler_binexpr(comp);
-    return mkAstNode(nodeType, left, right, 0);
+    while (Compiler_op_precedence(comp, tokenType) > ptp) {
+        Compiler_scan(comp);
+        ASTNode* right = Compiler_binexpr(comp, opPrec[tokenType]);
+        left = mkAstNode(Compiler_arithop(comp, tokenType), left, right, 0);
+        tokenType = comp->token.type;
+
+        if (tokenType == T_EOF) {
+            return left;
+        }
+    }
+
+    return left;
 }
 
 int Compiler_interpretAST(Compiler* comp, ASTNode* node) {
@@ -179,4 +190,15 @@ int Compiler_interpretAST(Compiler* comp, ASTNode* node) {
             fprintf(stderr, "Unknown AST operator %d\n", node->op);
             exit(1);
     }
+}
+
+int Compiler_op_precedence(Compiler* comp, TokenType tok) {
+    int prec = opPrec[tok];
+
+    if (prec == 0) {
+        fprintf(stderr, "syntax error on line %d, token %d\n", comp->line, tok);
+        exit(1);
+    }
+
+    return prec;
 }

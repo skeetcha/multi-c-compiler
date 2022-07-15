@@ -15,7 +15,7 @@ typedef struct {
 
 Compiler Compiler_new(char* filename);
 bool Compiler_scan(Compiler* comp);
-ASTNode* Compiler_binexpr(Compiler* comp);
+ASTNode* Compiler_binexpr(Compiler* comp, int ptp);
 int Compiler_interpretAST(Compiler* comp, ASTNode* node);
 
 #endif
