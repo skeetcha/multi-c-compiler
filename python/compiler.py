@@ -182,7 +182,6 @@ class Compiler:
         return left
     
     def buildAST(self, node):
-        astop = ['+', '-', '*', '/']
         leftVal = 0
         rightVal = 0
 
