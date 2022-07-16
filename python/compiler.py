@@ -1,5 +1,7 @@
 import sys
 from enum import Enum
+from llvmlite import ir
+from llvmlite import binding as llvm
 
 class TokenType(Enum):
     T_EOF  = 0
@@ -42,6 +44,14 @@ class Compiler:
         self.line = 1
         self.putback = '\n'
         self.token = Token(TokenType.T_EOF, 0)
+        self.module = ir.module.Module()
+        self.main = ir.Function(self.module, ir.types.FunctionType(ir.IntType(32), [ir.IntType(32), ir.PointerType(ir.PointerType(ir.IntType(1)))]), name='main')
+        bb_entry = self.main.append_basic_block()
+        self.builder = ir.builder.IRBuilder()
+        self.builder.position_at_end(bb_entry)
+        llvm.initialize()
+        llvm.initialize_native_target()
+        llvm.initialize_native_asmprinter()
     
     def next(self):
         c = ''
@@ -171,37 +181,64 @@ class Compiler:
         
         return left
     
-    def interpretAST(self, node):
+    def buildAST(self, node):
         astop = ['+', '-', '*', '/']
         leftVal = 0
         rightVal = 0
 
         if node.left != None:
-            leftVal = self.interpretAST(node.left)
+            leftVal = self.buildAST(node.left)
         
         if node.right != None:
-            rightVal = self.interpretAST(node.right)
-        
-        if node.op == ASTNodeOp.IntLit:
-            print('int %d' % node.intValue)
-        else:
-            print('%d %s %d' % (leftVal, astop[node.op.value], rightVal))
+            rightVal = self.buildAST(node.right)
         
         if node.op == ASTNodeOp.Add:
-            return leftVal + rightVal
+            return self.builder.add(leftVal, rightVal)
         elif node.op == ASTNodeOp.Subtract:
-            return leftVal - rightVal
+            return self.builder.sub(leftVal, rightVal)
         elif node.op == ASTNodeOp.Multiply:
-            return leftVal * rightVal
+            return self.builder.mul(leftVal, rightVal)
         elif node.op == ASTNodeOp.Divide:
-            return leftVal // rightVal
+            return self.builder.sdiv(leftVal, rightVal)
         elif node.op == ASTNodeOp.IntLit:
-            return node.intValue
+            val = self.builder.alloca(ir.types.IntType(32))
+            self.builder.store(ir.Constant(val.type.pointee, node.intValue), val)
+            return self.builder.load(val)
+    
+    def print(self, fmt, *vargs):
+        printf_type = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()], var_arg=True)
+        printf = ir.Function(self.module, printf_type, name='printf')
+        c_fmtString_val = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt)), bytearray(fmt.encode('utf-8')))
+        c_fmtString = self.builder.alloca(c_fmtString_val.type)
+        self.builder.store(c_fmtString_val, c_fmtString)
+        fmt_arg = self.builder.bitcast(c_fmtString, ir.IntType(8).as_pointer())
+        self.builder.call(printf, [fmt_arg, *vargs])
+    
+    def parse(self, node):
+        result = self.buildAST(node)
+        self.print('%d\n\0', result)
+        retval = self.builder.alloca(ir.IntType(32))
+        self.builder.store(ir.Constant(retval.type.pointee, 0), retval)
+        retint = self.builder.load(retval)
+        self.builder.ret(retint)
+        mod = llvm.parse_assembly(str(self.module))
+        mod.triple = llvm.get_default_triple()
+        mod.verify()
+        
+        target = llvm.Target.from_triple(mod.triple)
+
+        cpu_name = llvm.get_host_cpu_name()
+        cpu_features = llvm.get_host_cpu_features().flatten()
+        machine = target.create_target_machine(cpu=cpu_name, features=cpu_features, codemodel='default')
+        data = machine.emit_object(mod)
+        outFile = open('out.o', 'wb')
+        outFile.write(data)
+        outFile.close()
 
     def run(self):
         self.scan()
         node = self.expr()
-        print('%d' % self.interpretAST(node))
+        self.parse(node)
         self.inFile.close()
 
 def usage(prog):
