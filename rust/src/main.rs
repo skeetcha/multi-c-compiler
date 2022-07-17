@@ -1,4 +1,4 @@
-use std::{env::args, process::exit, fs::File, io::Read};
+use std::{env::args, process::exit, fs::{File, write}, io::Read, str::FromStr, path::Path};
 
 #[derive(Clone)]
 enum Token {
@@ -47,7 +47,7 @@ impl ASTNode {
         }
     }
 
-    fn mkAstLeaf(op: ASTNodeOp) -> Self {
+    fn mk_ast_node(op: ASTNodeOp) -> Self {
         Self {
             op: op,
             left: None,
@@ -55,7 +55,7 @@ impl ASTNode {
         }
     }
 
-    fn mkAstUnary(op: ASTNodeOp, left: Box<ASTNode>) -> Self {
+    fn mk_ast_unary(op: ASTNodeOp, left: Box<ASTNode>) -> Self {
         Self {
             op: op,
             left: Some(left),
@@ -201,7 +201,7 @@ impl Compiler {
 
     fn number(&mut self) -> ASTNode {
         if let Token::IntLit(val) = self.token {
-            let node = ASTNode::mkAstLeaf(ASTNodeOp::IntLit(val));
+            let node = ASTNode::mk_ast_node(ASTNodeOp::IntLit(val));
             self.scan();
             node
         } else {
@@ -221,7 +221,7 @@ impl Compiler {
             return left;
         }
 
-        while true {
+        loop {
             self.scan();
             let right = self.mul_expr();
             left = ASTNode::new(self.arithop(token), Box::new(left), Box::new(right));
@@ -243,7 +243,7 @@ impl Compiler {
             return left;
         }
 
-        while true {
+        while (matches!(token, Token::Star)) || (matches!(token, Token::Slash)) {
             match token.clone() {
                 Token::Eof => break,
                 Token::Plus => break,
@@ -293,10 +293,9 @@ impl Compiler {
         }
     }
 
-    fn run(&mut self) {
+    fn run(&mut self) -> ASTNode {
         self.scan();
-        let node = self.expr();
-        println!("{}", self.interpret_ast(node));
+        self.expr()
     }
 }
 
@@ -313,5 +312,5 @@ fn main() {
     }
 
     let mut compiler = Compiler::new(&args[1]);
-    compiler.run();
+    let node: ASTNode = compiler.run();
 }
