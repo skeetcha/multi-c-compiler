@@ -1,42 +1,10 @@
 import sys
-from enum import Enum
 from llvmlite import ir
 from llvmlite import binding as llvm
-
-class TokenType(Enum):
-    T_EOF  = 0
-    Plus   = 1
-    Minus  = 2
-    Star   = 3
-    Slash  = 4
-    IntLit = 5
-
-class Token:
-    def __init__(self, tokenType, intValue):
-        self.type = tokenType
-        self.intValue = intValue
-
-class ASTNodeOp(Enum):
-    Add      = 0
-    Subtract = 1
-    Multiply = 2
-    Divide   = 3
-    IntLit   = 4
-
-class ASTNode:
-    def __init__(self, op, left, right, intValue):
-        self.op = op
-        self.left = left
-        self.right = right
-        self.intValue = intValue
-    
-    @staticmethod
-    def mkAstLeaf(op, intValue):
-        return ASTNode(op, None, None, intValue)
-    
-    @staticmethod
-    def mkAstUnary(op, left, intValue):
-        return ASTNode(op, left, None, intValue)
+from token import Token
+from tokentype import TokenType
+from astnodeop import ASTNodeOp
+from astnode import ASTNode
 
 class Compiler:
     def __init__(self, filename):
@@ -239,17 +207,3 @@ class Compiler:
         node = self.expr()
         self.parse(node)
         self.inFile.close()
-
-def usage(prog):
-    print('Usage: %s infile' % prog, file=sys.stderr)
-    sys.exit(1)
-
-def main():
-    if len(sys.argv) != 2:
-        usage(sys.argv[0])
-    
-    compiler = Compiler(sys.argv[1])
-    compiler.run()
-
-if __name__ == '__main__':
-    main()
