@@ -4,7 +4,13 @@
 #include <string>
 #include "astNodeOp.hpp"
 #include "astNode.hpp"
+#include <llvm/IR/Value.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/LLVMContext.h>
 using namespace std;
+using namespace llvm;
 
 class Compiler {
 private:
@@ -24,6 +30,8 @@ private:
     ASTNode* add_expr();
     ASTNode* mul_expr();
     int interpretAST(ASTNode* node);
+    Value* buildAST(ASTNode* node, IRBuilder<>* builder);
+    void parse(ASTNode* node);
 public:
     Compiler(string filename);
     void run();
