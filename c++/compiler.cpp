@@ -195,45 +195,6 @@ ASTNode* Compiler::mul_expr() {
     return left;
 }
 
-const char* astop[] = {"+", "-", "*", "/"};
-
-int Compiler::interpretAST(ASTNode* node) {
-    int leftVal, rightVal;
-
-    if (node->left) {
-        leftVal = interpretAST(node->left);
-    }
-
-    if (node->right) {
-        rightVal = interpretAST(node->right);
-    }
-
-    switch (node->op) {
-        case ASTNodeOp::A_IntLit:
-            cout << "int " << node->intValue << endl;
-            break;
-        default:
-            cout << leftVal << " " << astop[node->op] << " " << rightVal << endl;
-            break;
-    }
-
-    switch (node->op) {
-        case ASTNodeOp::A_Add:
-            return leftVal + rightVal;
-        case ASTNodeOp::A_Subtract:
-            return leftVal - rightVal;
-        case ASTNodeOp::A_Multiply:
-            return leftVal * rightVal;
-        case ASTNodeOp::A_Divide:
-            return leftVal / rightVal;
-        case ASTNodeOp::A_IntLit:
-            return node->intValue;
-        default:
-            cerr << "unrecognized op " << node->op << " on line " << line << endl;
-            exit(1);
-    }
-}
-
 Value* Compiler::buildAST(ASTNode* node, IRBuilder<>* builder) {
     Value* leftVal;
     Value* rightVal;
@@ -366,7 +327,6 @@ Compiler::Compiler(string filename) {
 void Compiler::run() {
     scan();
     ASTNode* node = expr();
-    //cout << interpretAST(node) << endl;
     parse(node);
     delete node;
     inFile.close();

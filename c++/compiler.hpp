@@ -29,7 +29,6 @@ private:
     ASTNode* expr();
     ASTNode* add_expr();
     ASTNode* mul_expr();
-    int interpretAST(ASTNode* node);
     Value* buildAST(ASTNode* node, IRBuilder<>* builder);
     void parse(ASTNode* node);
 public:
