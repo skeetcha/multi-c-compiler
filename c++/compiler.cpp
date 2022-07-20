@@ -366,7 +366,7 @@ Compiler::Compiler(string filename) {
 void Compiler::run() {
     scan();
     ASTNode* node = expr();
-    cout << interpretAST(node) << endl;
+    //cout << interpretAST(node) << endl;
     parse(node);
     delete node;
     inFile.close();
