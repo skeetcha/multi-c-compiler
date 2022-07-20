@@ -335,9 +335,6 @@ void Compiler::parse(ASTNode* node) {
     // Make sure the function is fine
     verifyFunction(*main_function);
 
-    // Dump the IR
-    main_module.dump();
-
     // Create outstream
     error_code EC;
     raw_fd_ostream dest("output.o", EC, sys::fs::OF_None);
