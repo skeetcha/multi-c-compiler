@@ -6,6 +6,8 @@ from tokentype import TokenType
 from astnodeop import ASTNodeOp
 from astnode import ASTNode
 
+TextLen = 512
+
 class Compiler:
     def __init__(self, filename):
         self.inFile = open(filename, 'r')
@@ -20,6 +22,8 @@ class Compiler:
         llvm.initialize()
         llvm.initialize_native_target()
         llvm.initialize_native_asmprinter()
+        printf_type = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()], var_arg=True)
+        self.printf = ir.Function(self.module, printf_type, name='printf')
     
     def next(self):
         c = ''
@@ -63,10 +67,21 @@ class Compiler:
             self.token.type = TokenType.Star
         elif c == '/':
             self.token.type = TokenType.Slash
+        elif c == ';':
+            self.token.type = TokenType.Semi
         else:
             if c.isdigit():
                 self.token.intValue = self.scanint(c)
                 self.token.type = TokenType.IntLit
+            elif (c.isalpha()) or (c == '_'):
+                text = self.scanident(c, TextLen)
+                newTokenType = self.keyword(text)
+
+                if newTokenType != None:
+                    self.token.type = newTokenType
+                else:
+                    print('Unrecognized symbol %s on line %d' % (text, self.line), file=sys.stderr)
+                    sys.exit(1)
             else:
                 print('Unrecognized character %s on line %d' % (c, self.line), file=sys.stderr)
                 sys.exit(1)
@@ -87,6 +102,31 @@ class Compiler:
         
         self.putback = c
         return val
+    
+    def scanident(self, c, lim):
+        i = 0
+        buf = ''
+
+        while (c.isalpha()) or (c.isdigit()) or (c == '_'):
+            if (lim - 1) == i:
+                print('identifier too long on line %d' % self.line, file=sys.stderr)
+                sys.exit(1)
+            elif i < (lim - 1):
+                buf += c
+                i += 1
+            
+            c = self.next()
+        
+        self.putback = c
+        buf += '\0'
+        return buf
+    
+    def keyword(self, s):
+        if s[0] == 'p':
+            if s == 'print\0':
+                return TokenType.Print
+        
+        return None
     
     def arithop(self, tokenType):
         if tokenType == TokenType.Plus:
@@ -117,7 +157,7 @@ class Compiler:
         left = self.mul_expr()
         tokenType = self.token.type
         
-        if tokenType == TokenType.T_EOF:
+        if tokenType == TokenType.Semi:
             return left
         
         while True:
@@ -126,7 +166,7 @@ class Compiler:
             left = ASTNode(self.arithop(tokenType), left, right, 0)
             tokenType = self.token.type
 
-            if tokenType == TokenType.T_EOF:
+            if tokenType == TokenType.Semi:
                 break
         
         return left
@@ -135,7 +175,7 @@ class Compiler:
         left = self.number()
         tokenType = self.token.type
 
-        if tokenType == TokenType.T_EOF:
+        if tokenType == TokenType.Semi:
             return left
         
         while (tokenType == TokenType.Star) or (tokenType == TokenType.Slash):
@@ -144,10 +184,31 @@ class Compiler:
             left = ASTNode(self.arithop(tokenType), left, right, 0)
             tokenType = self.token.type
 
-            if tokenType == TokenType.T_EOF:
+            if tokenType == TokenType.Semi:
                 break
         
         return left
+    
+    def match(self, ttype, tstr):
+        if self.token.type == ttype:
+            self.scan()
+        else:
+            print('%s expected on line %d' % (tstr, self.line), file=sys.stderr)
+            sys.exit(1)
+    
+    def semi(self):
+        self.match(TokenType.Semi, ';')
+    
+    def statements(self):
+        while True:
+            self.match(TokenType.Print, 'print')
+            tree = self.expr()
+            ret_val = self.buildAST(tree)
+            self.print('%d\n\0', ret_val)
+            self.semi()
+
+            if self.token.type == TokenType.T_EOF:
+                return
     
     def buildAST(self, node):
         leftVal = 0
@@ -173,17 +234,14 @@ class Compiler:
             return self.builder.load(val)
     
     def print(self, fmt, *vargs):
-        printf_type = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()], var_arg=True)
-        printf = ir.Function(self.module, printf_type, name='printf')
         c_fmtString_val = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt)), bytearray(fmt.encode('utf-8')))
         c_fmtString = self.builder.alloca(c_fmtString_val.type)
         self.builder.store(c_fmtString_val, c_fmtString)
         fmt_arg = self.builder.bitcast(c_fmtString, ir.IntType(8).as_pointer())
-        self.builder.call(printf, [fmt_arg, *vargs])
+        self.builder.call(self.printf, [fmt_arg, *vargs])
     
-    def parse(self, node):
-        result = self.buildAST(node)
-        self.print('%d\n\0', result)
+    def parse(self):
+        self.statements()
         retval = self.builder.alloca(ir.IntType(32))
         self.builder.store(ir.Constant(retval.type.pointee, 0), retval)
         retint = self.builder.load(retval)
@@ -204,6 +262,5 @@ class Compiler:
 
     def run(self):
         self.scan()
-        node = self.expr()
-        self.parse(node)
+        self.parse()
         self.inFile.close()

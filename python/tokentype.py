@@ -7,3 +7,5 @@ class TokenType(Enum):
     Star   = 3
     Slash  = 4
     IntLit = 5
+    Semi   = 6
+    Print  = 7
