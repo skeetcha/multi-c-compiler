@@ -1,8 +1,13 @@
-CC=x86_64-w64-mingw32-gcc
-OUT=out/compiler.exe
+CC=gcc
+OUT=build/compiler.out
 
 CFLAGS  =-std=c17 -O3 -Wall -Wextra -Wpedantic -Wstrict-aliasing -Wno-narrowing -Wno-overflow
-LDFLAGS =-lmingw32
+LDFLAGS =
+LIBS=
+# LLVM Info
+CFLAGS += $(shell llvm-config-14 --cxxflags)
+LDFLAGS +=$(shell llvm-config-14 --ldflags)
+LIBS += $(shell llvm-config-14 --libs) $(shell llvm-config-14 --system-libs)
 
 SRC=$(wildcard *.c)
 OBJ=$(SRC:.c=.o)
@@ -10,7 +15,7 @@ OBJ=$(SRC:.c=.o)
 all: $(OUT)
 
 $(OUT): $(OBJ)
-	$(CC) -o $@ $^ $(LDFLAGS)
+	$(CC) -o $@ $(LDFLAGS) $^ $(LIBS)
 
 %.o: %.c
 	$(CC) -o $@ -c $< $(CFLAGS)
@@ -18,7 +23,7 @@ $(OUT): $(OBJ)
 .PHONY: clean mrproper
 
 clean:
-	rm -rf *.obj
+	rm -rf *.o
 
 mrproper: clean
 	rm -rf $(OUT)

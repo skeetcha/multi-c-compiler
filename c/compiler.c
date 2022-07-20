@@ -7,6 +7,11 @@
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <llvm-c/Types.h>
+#include <llvm-c/Core.h>
+#include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
+#include <llvm-c/Analysis.h>
 
 Compiler Compiler_new(char* filename) {
     Compiler comp;
@@ -186,48 +191,129 @@ ASTNode* Compiler_mul_expr(Compiler* comp) {
     return left;
 }
 
-const char* astop[] = {"+", "-", "*", "/"};
-
-int Compiler_interpretAST(Compiler* comp, ASTNode* node) {
-    int leftVal, rightVal;
+LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef builder, LLVMContextRef context) {
+    LLVMValueRef leftVal;
+    LLVMValueRef rightVal;
 
     if (node->left) {
-        leftVal = Compiler_interpretAST(comp, node->left);
+        leftVal = Compiler_buildAST(comp, node->left, builder, context);
         free(node->left);
     }
 
     if (node->right) {
-        rightVal = Compiler_interpretAST(comp, node->right);
+        rightVal = Compiler_buildAST(comp, node->right, builder, context);
         free(node->right);
-    }
-
-    if (node->op == A_INTLIT) {
-        printf("int %d\n", node->intValue);
-    } else {
-        printf("%d %s %d\n", leftVal, astop[node->op], rightVal);
     }
 
     switch (node->op) {
         case A_ADD:
-            return leftVal + rightVal;
+            return LLVMBuildAdd(builder, leftVal, rightVal, "add");
         case A_SUBTRACT:
-            return leftVal - rightVal;
+            return LLVMBuildSub(builder, leftVal, rightVal, "sub");
         case A_MULTIPLY:
-            return leftVal * rightVal;
+            return LLVMBuildMul(builder, leftVal, rightVal, "mul");
         case A_DIVIDE:
-            return leftVal / rightVal;
+            return LLVMBuildSDiv(builder, leftVal, rightVal, "div");
         case A_INTLIT:
-            return node->intValue;
+            return LLVMConstInt(LLVMInt32TypeInContext(context), node->intValue, false);
         default:
-            fprintf(stderr, "Unrecognized node in AST: %d\n", node->op);
+            fprintf(stderr, "unrecognized node in ast %d\n", node->op);
             exit(1);
     }
+}
+
+void Compiler_parse(Compiler* comp, ASTNode* node) {
+    // Initialize everything
+    LLVMInitializeAllTargetInfos();
+    LLVMInitializeAllTargets();
+    LLVMInitializeAllTargetMCs();
+    LLVMInitializeAllAsmParsers();
+    LLVMInitializeAllAsmPrinters();
+
+    // Create context
+    LLVMContextRef main_context = LLVMContextCreate();
+
+    // Create module
+    LLVMModuleRef main_module = LLVMModuleCreateWithNameInContext("main_module", main_context);
+
+    // Set module triple
+    char* triple = LLVMGetDefaultTargetTriple();
+    LLVMSetTarget(main_module, triple);
+
+    // Create target from triple
+    LLVMTargetRef target;
+    char* errorMessage;
+    LLVMBool failure = LLVMGetTargetFromTriple(triple, &target, &errorMessage);
+
+    if (failure) {
+        fprintf(stderr, "Error getting host target: %s\n", errorMessage);
+        LLVMDisposeMessage(errorMessage);
+        LLVMDisposeModule(main_module);
+        LLVMContextDispose(main_context);
+        exit(1);
+    }
+
+    // Create target machine
+    char* cpu_name = LLVMGetHostCPUName();
+    char* cpu_features = LLVMGetHostCPUFeatures();
+    LLVMTargetMachineRef machine = LLVMCreateTargetMachine(target, triple, cpu_name, cpu_features, LLVMCodeGenLevelNone, LLVMRelocDefault, LLVMCodeModelDefault);
+    LLVMSetModuleDataLayout(main_module, LLVMCreateTargetDataLayout(machine));
+
+    // Create builder
+    LLVMBuilderRef builder = LLVMCreateBuilderInContext(main_context);
+
+    // Setup printf function
+    LLVMTypeRef printf_arg_types[] = {LLVMPointerType(LLVMInt8TypeInContext(main_context), 0)};
+    LLVMTypeRef printf_type = LLVMFunctionType(LLVMInt32TypeInContext(main_context), printf_arg_types, 1, true);
+    LLVMValueRef printf_func = LLVMAddFunction(main_module, "printf", printf_type);
+    LLVMSetLinkage(printf_func, LLVMExternalLinkage);
+
+    // Setup main function
+    LLVMTypeRef main_arg_types[] = {LLVMInt32TypeInContext(main_context), LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(main_context), 0), 0)};
+    LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(main_context), main_arg_types, 2, false);
+    LLVMValueRef main_func = LLVMAddFunction(main_module, "main", main_type);
+    LLVMBasicBlockRef main_bb = LLVMAppendBasicBlockInContext(main_context, main_func, "entry");
+    LLVMPositionBuilderAtEnd(builder, main_bb);
+
+    // Compile code
+    LLVMValueRef ret_val = Compiler_buildAST(comp, node, builder, main_context);
+
+    // Print out the result
+    LLVMValueRef format_const = LLVMConstStringInContext(main_context, "%d\n", 4, true);
+    LLVMValueRef var_ptr = LLVMBuildAlloca(builder, LLVMArrayType(LLVMInt8TypeInContext(main_context), 4), "fmt_ptr");
+    LLVMBuildStore(builder, format_const, var_ptr);
+    //LLVMValueRef 	LLVMBuildBitCast (LLVMBuilderRef, LLVMValueRef Val, LLVMTypeRef DestTy, const char *Name)
+    LLVMValueRef fmt_arg = LLVMBuildBitCast(builder, var_ptr, LLVMPointerType(LLVMInt8TypeInContext(main_context), 0), "fmt_ptr_bitcast");
+    LLVMValueRef printf_args[] = {fmt_arg, ret_val};
+    LLVMBuildCall2(builder, printf_type, printf_func, printf_args, 2, "printf_res");
+
+    // Return result from main
+    LLVMBuildRet(builder, LLVMConstInt(LLVMInt32TypeInContext(main_context), 0, false));
+
+    // Make sure the function is fine
+    LLVMVerifyFunction(main_func, LLVMAbortProcessAction);
+
+    // Write to file
+    failure = LLVMTargetMachineEmitToFile(machine, main_module, "output.o", LLVMObjectFile, &errorMessage);
+
+    if (failure) {
+        fprintf(stderr, "Error writing code to output.o: %s\n", errorMessage);
+        LLVMDisposeMessage(errorMessage);
+        LLVMDisposeModule(main_module);
+        LLVMContextDispose(main_context);
+        exit(1);
+    }
+
+    LLVMDisposeBuilder(builder);
+    LLVMDisposeTargetMachine(machine);
+    LLVMDisposeModule(main_module);
+    LLVMContextDispose(main_context);
 }
 
 void Compiler_run(Compiler* comp) {
     Compiler_scan(comp);
     ASTNode* node = Compiler_expr(comp);
-    printf("%d\n", Compiler_interpretAST(comp, node));
+    Compiler_parse(comp, node);
     free(node);
     fclose(comp->inFile);
 }

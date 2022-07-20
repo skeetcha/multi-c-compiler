@@ -7,6 +7,7 @@
 #include "astNodeOp.h"
 #include "tokenType.h"
 #include "astNode.h"
+#include <llvm-c/Types.h>
 
 typedef struct {
     FILE* inFile;
@@ -25,7 +26,8 @@ ASTNode* Compiler_number(Compiler* comp);
 ASTNode* Compiler_expr(Compiler* comp);
 ASTNode* Compiler_add_expr(Compiler* comp);
 ASTNode* Compiler_mul_expr(Compiler* comp);
-int Compiler_interpretAST(Compiler* comp, ASTNode* node);
+LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef builder, LLVMContextRef context);
+void Compiler_parse(Compiler* comp, ASTNode* node);
 void Compiler_run(Compiler* comp);
 
 #endif

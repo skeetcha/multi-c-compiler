@@ -3,10 +3,10 @@
 
 #include "astNodeOp.h"
 
-typedef struct astnode {
+typedef struct an {
     ASTNodeOp op;
-    struct astnode* left;
-    struct astnode* right;
+    struct an* left;
+    struct an* right;
     int intValue;
 } ASTNode;
 
