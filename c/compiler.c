@@ -13,6 +13,8 @@
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Analysis.h>
 
+const int TEXT_LEN_LIMIT = 512;
+
 Compiler Compiler_new(char* filename) {
     Compiler comp;
     comp.inFile = fopen(filename, "r");
@@ -78,11 +80,26 @@ bool Compiler_scan(Compiler* comp) {
         case '/':
             comp->token.type = T_SLASH;
             break;
+        case ';':
+            comp->token.type = T_SEMI;
+            break;
         default:
             if (isdigit(c)) {
                 comp->token.intValue = Compiler_scanint(comp, c);
                 comp->token.type = T_INTLIT;
                 break;
+            } else if ((isalpha(c)) || (c == '_')) {
+                char text[512];
+                Compiler_scanident(comp, c, text);
+                TokenType newTokenType = Compiler_keyword(comp, text);
+
+                if (newTokenType != T_EOF) {
+                    comp->token.type = newTokenType;
+                    break;
+                } else {
+                    fprintf(stderr, "Unrecognized symbol %s on line %d\n", text, comp->line);
+                    exit(1);
+                }
             }
 
             fprintf(stderr, "Unrecognized character %c on line %d\n", c, comp->line);
@@ -111,6 +128,47 @@ int Compiler_scanint(Compiler* comp, char c) {
 
     comp->putback = c;
     return val;
+}
+
+void Compiler_scanident(Compiler* comp, char c, char* buf) {
+    int i = 0;
+
+    while ((isalpha(c)) || (isdigit(c)) || (c == '_')) {
+        if (i == (TEXT_LEN_LIMIT - 1)) {
+            fprintf(stderr, "identifier too long on line %d\n", comp->line);
+            exit(1);
+        } else if (i < (TEXT_LEN_LIMIT - 1)) {
+            buf[i++] = c;
+        }
+
+        c = Compiler_next(comp);
+    }
+
+    comp->putback = c;
+    buf[i] = '\0';
+}
+
+TokenType Compiler_keyword(Compiler* comp, char* s) {
+    if (s[0] == 'p') {
+        if (strcmp(s, "print\0") == 0) {
+            return T_PRINT;
+        }
+    }
+
+    return T_EOF;
+}
+
+void Compiler_match(Compiler* comp, TokenType ttype, char* tstr) {
+    if (comp->token.type == ttype) {
+        Compiler_scan(comp);
+    } else {
+        fprintf(stderr, "%s expected on line %d\n", tstr, comp->line);
+        exit(1);
+    }
+}
+
+void Compiler_semi(Compiler* comp) {
+    Compiler_match(comp, T_SEMI, ";");
 }
 
 ASTNodeOp Compiler_arithop(Compiler* comp, TokenType tok) {
@@ -151,7 +209,7 @@ ASTNode* Compiler_add_expr(Compiler* comp) {
     ASTNode* left = Compiler_mul_expr(comp);
     TokenType tokenType = comp->token.type;
 
-    if (tokenType == T_EOF) {
+    if (tokenType == T_SEMI) {
         return left;
     }
 
@@ -161,7 +219,7 @@ ASTNode* Compiler_add_expr(Compiler* comp) {
         left = mkAstNode(Compiler_arithop(comp, tokenType), left, right, 0);
         tokenType = comp->token.type;
 
-        if (tokenType == T_EOF) {
+        if (tokenType == T_SEMI) {
             break;
         }
     }
@@ -173,7 +231,7 @@ ASTNode* Compiler_mul_expr(Compiler* comp) {
     ASTNode* left = Compiler_number(comp);
     TokenType tokenType = comp->token.type;
 
-    if (tokenType == T_EOF) {
+    if (tokenType == T_SEMI) {
         return left;
     }
 
@@ -183,12 +241,27 @@ ASTNode* Compiler_mul_expr(Compiler* comp) {
         left = mkAstNode(Compiler_arithop(comp, tokenType), left, right, 0);
         tokenType = comp->token.type;
 
-        if (tokenType == T_EOF) {
+        if (tokenType == T_SEMI) {
             break;
         }
     }
 
     return left;
+}
+
+void Compiler_statements(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context, LLVMTypeRef printf_type, LLVMValueRef printf_func) {
+    while (true) {
+        Compiler_match(comp, T_PRINT, "print");
+        ASTNode* tree = Compiler_expr(comp);
+        LLVMValueRef ret_val = Compiler_buildAST(comp, tree, builder, context);
+        free(tree);
+        Compiler_generatePrint(comp, builder, context, printf_type, printf_func, ret_val);
+        Compiler_semi(comp);
+
+        if (comp->token.type == T_EOF) {
+            return;
+        }
+    }
 }
 
 LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef builder, LLVMContextRef context) {
@@ -222,7 +295,16 @@ LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef bui
     }
 }
 
-void Compiler_parse(Compiler* comp, ASTNode* node) {
+void Compiler_generatePrint(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context, LLVMTypeRef printf_type, LLVMValueRef printf_func, LLVMValueRef value) {
+    LLVMValueRef format_const = LLVMConstStringInContext(context, "%d\n", 4, true);
+    LLVMValueRef var_ptr = LLVMBuildAlloca(builder, LLVMArrayType(LLVMInt8TypeInContext(context), 4), "fmt_ptr");
+    LLVMBuildStore(builder, format_const, var_ptr);
+    LLVMValueRef fmt_arg = LLVMBuildBitCast(builder, var_ptr, LLVMPointerType(LLVMInt8TypeInContext(context), 0), "fmt_ptr_bitcast");
+    LLVMValueRef printf_args[] = {fmt_arg, value};
+    LLVMBuildCall2(builder, printf_type, printf_func, printf_args, 2, "printf_res");
+}
+
+void Compiler_parse(Compiler* comp) {
     // Initialize everything
     LLVMInitializeAllTargetInfos();
     LLVMInitializeAllTargets();
@@ -276,16 +358,7 @@ void Compiler_parse(Compiler* comp, ASTNode* node) {
     LLVMPositionBuilderAtEnd(builder, main_bb);
 
     // Compile code
-    LLVMValueRef ret_val = Compiler_buildAST(comp, node, builder, main_context);
-
-    // Print out the result
-    LLVMValueRef format_const = LLVMConstStringInContext(main_context, "%d\n", 4, true);
-    LLVMValueRef var_ptr = LLVMBuildAlloca(builder, LLVMArrayType(LLVMInt8TypeInContext(main_context), 4), "fmt_ptr");
-    LLVMBuildStore(builder, format_const, var_ptr);
-    //LLVMValueRef 	LLVMBuildBitCast (LLVMBuilderRef, LLVMValueRef Val, LLVMTypeRef DestTy, const char *Name)
-    LLVMValueRef fmt_arg = LLVMBuildBitCast(builder, var_ptr, LLVMPointerType(LLVMInt8TypeInContext(main_context), 0), "fmt_ptr_bitcast");
-    LLVMValueRef printf_args[] = {fmt_arg, ret_val};
-    LLVMBuildCall2(builder, printf_type, printf_func, printf_args, 2, "printf_res");
+    Compiler_statements(comp, builder, main_context, printf_type, printf_func);
 
     // Return result from main
     LLVMBuildRet(builder, LLVMConstInt(LLVMInt32TypeInContext(main_context), 0, false));
@@ -312,8 +385,6 @@ void Compiler_parse(Compiler* comp, ASTNode* node) {
 
 void Compiler_run(Compiler* comp) {
     Compiler_scan(comp);
-    ASTNode* node = Compiler_expr(comp);
-    Compiler_parse(comp, node);
-    free(node);
+    Compiler_parse(comp);
     fclose(comp->inFile);
 }
