@@ -1,12 +1,13 @@
 import sys
 from llvmlite import ir
 from llvmlite import binding as llvm
-from token import Token
+from ctoken import Token
 from tokentype import TokenType
 from astnodeop import ASTNodeOp
 from astnode import ASTNode
 
 TextLen = 512
+NumSymbols = 1024
 
 class Compiler:
     def __init__(self, filename):
@@ -24,6 +25,8 @@ class Compiler:
         llvm.initialize_native_asmprinter()
         printf_type = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()], var_arg=True)
         self.printf = ir.Function(self.module, printf_type, name='printf')
+        self.text = ''
+        self.globals = {}
     
     def next(self):
         c = ''
@@ -69,19 +72,20 @@ class Compiler:
             self.token.type = TokenType.Slash
         elif c == ';':
             self.token.type = TokenType.Semi
+        elif c == '=':
+            self.token.type = TokenType.Equals
         else:
             if c.isdigit():
                 self.token.intValue = self.scanint(c)
                 self.token.type = TokenType.IntLit
             elif (c.isalpha()) or (c == '_'):
-                text = self.scanident(c, TextLen)
-                newTokenType = self.keyword(text)
+                self.text = self.scanident(c, TextLen)
+                newTokenType = self.keyword(self.text)
 
                 if newTokenType != None:
                     self.token.type = newTokenType
                 else:
-                    print('Unrecognized symbol %s on line %d' % (text, self.line), file=sys.stderr)
-                    sys.exit(1)
+                    self.token.type = TokenType.Ident
             else:
                 print('Unrecognized character %s on line %d' % (c, self.line), file=sys.stderr)
                 sys.exit(1)
@@ -125,6 +129,9 @@ class Compiler:
         if s[0] == 'p':
             if s == 'print\0':
                 return TokenType.Print
+        elif s[0] == 'i':
+            if s == 'int\0':
+                return TokenType.Int
         
         return None
     
@@ -141,14 +148,22 @@ class Compiler:
             print('Invalid token on line %d' % self.line, file=sys.stderr)
             sys.exit(1)
     
-    def number(self):
+    def primary(self):
         if self.token.type == TokenType.IntLit:
             node = ASTNode.mkAstLeaf(ASTNodeOp.IntLit, self.token.intValue)
             self.scan()
             return node
+        elif self.token.type == TokenType.Ident:
+            id = self.findglobal(self.text)
+
+            if id == None:
+                self.fatals('Unknown variable', self.text)
+            
+            node = ASTNode.mkAstLeaf(ASTNodeOp.Ident, id)
+            self.scan()
+            return node
         else:
-            print('syntax error on line %d' % self.line, file=sys.stderr)
-            sys.exit(1)
+            self.fatald('Syntax error, token', self.token.type.value)
     
     def expr(self):
         return self.add_expr()
@@ -172,7 +187,7 @@ class Compiler:
         return left
     
     def mul_expr(self):
-        left = self.number()
+        left = self.primary()
         tokenType = self.token.type
 
         if tokenType == TokenType.Semi:
@@ -180,7 +195,7 @@ class Compiler:
         
         while (tokenType == TokenType.Star) or (tokenType == TokenType.Slash):
             self.scan()
-            right = self.number()
+            right = self.primary()
             left = ASTNode(self.arithop(tokenType), left, right, 0)
             tokenType = self.token.type
 
@@ -199,20 +214,66 @@ class Compiler:
     def semi(self):
         self.match(TokenType.Semi, ';')
     
+    def ident(self):
+        self.match(TokenType.Ident, 'identifier')
+    
+    def fatald(self, s, d):
+        print('%s:%d on line %d' % (s, d, self.line), file=sys.stderr)
+        sys.exit(1)
+    
+    def fatals(self, s1, s2):
+        print('%s:%s on line %d' % (s1, s2, self.line), file=sys.stderr)
+        sys.exit(1)
+    
     def statements(self):
         while True:
-            self.match(TokenType.Print, 'print')
-            tree = self.expr()
-            ret_val = self.buildAST(tree)
-            self.print('%d\n\0', ret_val)
-            self.semi()
-
-            if self.token.type == TokenType.T_EOF:
+            if self.token.type == TokenType.Print:
+                self.print_statement()
+            elif self.token.type == TokenType.Int:
+                self.var_declaration()
+            elif self.token.type == TokenType.Ident:
+                self.assignment_statement()
+            elif self.token.type == TokenType.T_EOF:
                 return
+            else:
+                self.fatald('Syntax error, token', self.token.type.value)
+    
+    def print_statement(self):
+        self.match(TokenType.Print, 'print')
+        tree = self.expr()
+        ret_val = self.buildAST(tree)
+        self.print('%d\n\0', ret_val)
+        self.semi()
+
+    def var_declaration(self):
+        self.match(TokenType.Int, 'int')
+        self.ident()
+        self.addglobal(self.text)
+        self.semi()
+
+    def assignment_statement(self):
+        self.ident()
+        id = self.findglobal(self.text)
+
+        if id == None:
+            self.fatals('Undeclared variable', self.text)
+        
+        right = ASTNode.mkAstLeaf(ASTNodeOp.LVIdent, id)
+        self.match(TokenType.Equals, '=')
+        left = self.expr()
+        tree = ASTNode(ASTNodeOp.Assign, left, right, 0)
+        self.buildAST(tree)
+        self.semi()
+    
+    def addglobal(self, text):
+        self.globals[text] = self.builder.alloca(ir.types.IntType(32))
+
+    def findglobal(self, text):
+        return self.globals.get(text)
     
     def buildAST(self, node):
-        leftVal = 0
-        rightVal = 0
+        leftVal = None
+        rightVal = None
 
         if node.left != None:
             leftVal = self.buildAST(node.left)
@@ -230,8 +291,15 @@ class Compiler:
             return self.builder.sdiv(leftVal, rightVal)
         elif node.op == ASTNodeOp.IntLit:
             val = self.builder.alloca(ir.types.IntType(32))
-            self.builder.store(ir.Constant(val.type.pointee, node.intValue), val)
+            self.builder.store(ir.Constant(val.type.pointee, node.value), val)
             return self.builder.load(val)
+        elif node.op == ASTNodeOp.LVIdent:
+            return node.value
+        elif node.op == ASTNodeOp.Assign:
+            self.builder.store(leftVal, rightVal)
+            return None
+        elif node.op == ASTNodeOp.Ident:
+            return self.builder.load(node.value)
     
     def print(self, fmt, *vargs):
         c_fmtString_val = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt)), bytearray(fmt.encode('utf-8')))

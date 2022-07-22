@@ -9,3 +9,6 @@ class TokenType(Enum):
     IntLit = 5
     Semi   = 6
     Print  = 7
+    Equals = 8
+    Int    = 9
+    Ident  = 10

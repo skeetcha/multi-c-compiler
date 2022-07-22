@@ -6,3 +6,6 @@ class ASTNodeOp(Enum):
     Multiply = 2
     Divide   = 3
     IntLit   = 4
+    LVIdent  = 5
+    Assign   = 6
+    Ident    = 7
