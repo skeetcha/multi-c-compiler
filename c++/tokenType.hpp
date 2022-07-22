@@ -6,5 +6,7 @@ enum TokenType {
     T_Minus,
     T_Star,
     T_Slash,
-    T_IntLit
+    T_IntLit,
+    T_Print,
+    T_Semi
 };

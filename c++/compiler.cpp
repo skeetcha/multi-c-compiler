@@ -33,6 +33,8 @@
 using namespace std;
 using namespace llvm;
 
+const int TEXT_LEN_LIMIT = 512;
+
 char Compiler::next() {
     char c;
 
@@ -82,11 +84,25 @@ bool Compiler::scan() {
         case '/':
             token.type = TokenType::T_Slash;
             break;
+        case ';':
+            token.type = TokenType::T_Semi;
+            break;
         default:
             if (isdigit(c)) {
                 token.intValue = scanint(c);
                 token.type = TokenType::T_IntLit;
                 break;
+            } else if ((isalpha(c)) || (c == '_')) {
+                string text = scanident(c);
+                TokenType newTokenType = keyword(text);
+
+                if (newTokenType != TokenType::T_EOF) {
+                    token.type = newTokenType;
+                    break;
+                } else {
+                    cerr << "Unrecognized symbol " << text << " on line " << line << endl;
+                    exit(1);
+                }
             }
 
             cerr << "Unrecognized character " << c << " on line " << line << endl;
@@ -117,6 +133,34 @@ int Compiler::scanint(char c) {
     return val;
 }
 
+string Compiler::scanident(char c) {
+    int i = 0;
+    string buf = "";
+
+    while ((isalpha(c)) || (isdigit(c)) || (c == '_')) {
+        if (i == (TEXT_LEN_LIMIT - 1)) {
+            cerr << "identifier too long on line " << line << endl;
+            exit(1);
+        } else if (i < (TEXT_LEN_LIMIT - 1)) {
+            buf += c;
+            i++;
+        }
+
+        c = next();
+    }
+
+    putback = c;
+    return buf;
+}
+
+TokenType Compiler::keyword(string s) {
+    if (s == "print") {
+        return TokenType::T_Print;
+    }
+
+    return TokenType::T_EOF;
+}
+
 ASTNodeOp Compiler::arithop(TokenType tok) {
     switch (tok) {
         case TokenType::T_Plus:
@@ -131,6 +175,19 @@ ASTNodeOp Compiler::arithop(TokenType tok) {
             cerr << "Invalid token on line " << line << endl;
             exit(1);
     }
+}
+
+void Compiler::match(TokenType ttype, string tstr) {
+    if (token.type == ttype) {
+        scan();
+    } else {
+        cerr << tstr << " expected on line " << line << endl;
+        exit(1);
+    }
+}
+
+void Compiler::semi() {
+    match(TokenType::T_Semi, ";");
 }
 
 ASTNode* Compiler::number() {
@@ -155,7 +212,7 @@ ASTNode* Compiler::add_expr() {
     ASTNode* left = mul_expr();
     TokenType tokenType = token.type;
 
-    if (tokenType == TokenType::T_EOF) {
+    if (tokenType == TokenType::T_Semi) {
         return left;
     }
 
@@ -165,7 +222,7 @@ ASTNode* Compiler::add_expr() {
         left = new ASTNode(arithop(tokenType), left, right, 0);
         tokenType = token.type;
 
-        if (tokenType == TokenType::T_EOF) {
+        if (tokenType == TokenType::T_Semi) {
             break;
         }
     }
@@ -177,7 +234,7 @@ ASTNode* Compiler::mul_expr() {
     ASTNode* left = number();
     TokenType tokenType = token.type;
 
-    if (tokenType == TokenType::T_EOF) {
+    if (tokenType == TokenType::T_Semi) {
         return left;
     }
 
@@ -187,12 +244,27 @@ ASTNode* Compiler::mul_expr() {
         left = new ASTNode(arithop(tokenType), left, right, 0);
         tokenType = token.type;
 
-        if (tokenType == TokenType::T_EOF) {
+        if (tokenType == TokenType::T_Semi) {
             break;
         }
     }
 
     return left;
+}
+
+void Compiler::statements(IRBuilder<>* builder, FunctionType* printf_type, Function* printf_fn, LLVMContext* context) {
+    while (true) {
+        match(TokenType::T_Print, "print");
+        ASTNode* tree = expr();
+        Value* ret_val = buildAST(tree, builder);
+        delete tree;
+        generatePrint(builder, ret_val, printf_type, printf_fn, context);
+        semi();
+
+        if (token.type == TokenType::T_EOF) {
+            return;
+        }
+    }
 }
 
 Value* Compiler::buildAST(ASTNode* node, IRBuilder<>* builder) {
@@ -226,7 +298,16 @@ Value* Compiler::buildAST(ASTNode* node, IRBuilder<>* builder) {
     }
 }
 
-void Compiler::parse(ASTNode* node) {
+void Compiler::generatePrint(IRBuilder<>* builder, Value* val, FunctionType* printf_type, Function* printf_fn, LLVMContext* context) {
+    Constant* format_const = ConstantDataArray::getString(*context, "%d\n");
+    AllocaInst* var_ptr = builder->CreateAlloca(ArrayType::get(IntegerType::get(*context, 8), 4), 5);
+    builder->CreateStore(format_const, var_ptr);
+    Value* fmt_arg = builder->CreateBitCast(var_ptr, Type::getInt8PtrTy(*context));
+    Value* printf_args[] = {fmt_arg, val};
+    builder->CreateCall(printf_type, printf_fn, printf_args);
+}
+
+void Compiler::parse() {
     // Initialize everything
     InitializeAllTargetInfos();
     InitializeAllTargets();
@@ -278,17 +359,7 @@ void Compiler::parse(ASTNode* node) {
     builder.SetInsertPoint(main_bb);
 
     // Compile code
-    Value* ret_val = buildAST(node, &builder);
-    
-    // Print out the result
-    Constant* format_const = ConstantDataArray::getString(main_context, "%d\n");
-    //GlobalVariable* var = new GlobalVariable(main_module, ArrayType::get(IntegerType::get(main_context, 8), 4), true, GlobalValue::PrivateLinkage, format_const, Twine("fmt"));
-    AllocaInst* var_ptr = builder.CreateAlloca(ArrayType::get(IntegerType::get(main_context, 8), 4), 5);
-    builder.CreateStore(format_const, var_ptr);
-    // CreateBitCast (Value *V, Type *DestTy, const Twine &Name="")
-    Value* fmt_arg = builder.CreateBitCast(var_ptr, Type::getInt8PtrTy(main_context));
-    Value* printf_args[] = {fmt_arg, ret_val};
-    builder.CreateCall(printf_type, printf_func, printf_args);
+    statements(&builder, printf_type, printf_func, &main_context);
 
     // Return result from main
     builder.CreateRet(builder.getInt32(0));
@@ -326,8 +397,6 @@ Compiler::Compiler(string filename) {
 
 void Compiler::run() {
     scan();
-    ASTNode* node = expr();
-    parse(node);
-    delete node;
+    parse();
     inFile.close();
 }
