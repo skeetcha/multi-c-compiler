@@ -5,3 +5,4 @@ version = "0.1.0"
 
 [deps]
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
+StringEncodings = "69024149-9ee7-55f6-a4c4-859efe599b68"

@@ -1,5 +1,8 @@
 module CCompiler
 
+using LLVM
+using StringEncodings
+
 include("tokentype.jl")
 include("token.jl")
 include("astnodeop.jl")
@@ -19,7 +22,8 @@ function __init__()
     compiler = Compiler(open(ARGS[1], "r"))
     compiler_scan(compiler)
     node = compiler_binexpr(compiler)
-    println(compiler_interpretAST(node))
+    #println(compiler_interpretAST(node))
+    compiler_parse(compiler, node)
     close(compiler.inFile)
 end
 
