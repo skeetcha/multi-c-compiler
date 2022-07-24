@@ -21,9 +21,7 @@ function __init__()
 
     compiler = Compiler(open(ARGS[1], "r"))
     compiler_scan(compiler)
-    node = compiler_binexpr(compiler)
-    #println(compiler_interpretAST(node))
-    compiler_parse(compiler, node)
+    compiler_parse(compiler)
     close(compiler.inFile)
 end
 

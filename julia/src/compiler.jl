@@ -1,11 +1,14 @@
+const TEXT_LEN_LIMIT = 512
+
 mutable struct Compiler
     line::Int64
     putback::Char
     inFile::IOStream
     token::Token
+    text::String
 
     function Compiler(i::IOStream)
-        new(1, '\n', i, Token(T_EOF, 0))
+        new(1, '\n', i, Token(T_EOF, 0), "")
     end
 end
 
@@ -59,11 +62,22 @@ function compiler_scan(comp::Compiler)
         comp.token.type = T_STAR
     elseif c == '/'
         comp.token.type = T_SLASH
+    elseif c == ';'
+        comp.token.type = T_SEMI
     else
         if isdigit(c)
             comp.token.intValue = compiler_scanint(comp, c)
             comp.token.type = T_INTLIT
             return true
+        elseif (isletter(c)) || (c == '_')
+            comp.text = compiler_scanident(comp, c)
+            tokenType = compiler_keyword(comp.text)
+            
+            if tokenType != nothing
+                comp.token.type = tokenType
+            else
+                throw(ErrorException("Unrecognized symbol " * comp.text * " on line " * string(comp.line)))
+            end
         else
             throw(ErrorException("Unrecognized character " * c * " on line " * comp.line))
         end
@@ -96,16 +110,30 @@ function compiler_scanint(comp::Compiler, c::Char)
     return val
 end
 
-function compiler_scanfile(comp::Compiler)
-    while compiler_scan(comp)
-        print("Token " * tokenToString(comp.token.type))
+function compiler_scanident(comp::Compiler, c::Char)
+    i = 0
+    buf = ""
 
-        if comp.token.type == T_INTLIT
-            print(", value " * string(comp.token.intValue))
+    while (isletter(c)) || (isdigit(c)) || (c == '_')
+        if i == (TEXT_LEN_LIMIT - 1)
+            throw(ErrorException("identifier too long on line " * string(comp.line)))
+        elseif i < (TEXT_LEN_LIMIT - 1)
+            buf *= c
         end
 
-        println("")
+        c = compiler_next(comp)
     end
+
+    comp.putback = c
+    buf *= '\0'
+end
+
+function compiler_keyword(s::String)
+    if s == "print\0"
+        return T_PRINT
+    end
+
+    return nothing
 end
 
 function compiler_arithop(comp::Compiler, token::TokenType)
@@ -140,7 +168,7 @@ function compiler_addexpr(comp::Compiler)
     left = compiler_mulexpr(comp)
     tokenType = comp.token.type
 
-    if tokenType == T_EOF
+    if tokenType == T_SEMI
         return left
     end
 
@@ -150,7 +178,7 @@ function compiler_addexpr(comp::Compiler)
         left = ASTNode(compiler_arithop(comp, tokenType), left, right, 0)
         tokenType = comp.token.type
 
-        if tokenType == T_EOF
+        if tokenType == T_SEMI
             break
         end
     end
@@ -162,7 +190,7 @@ function compiler_mulexpr(comp::Compiler)
     left = compiler_primary(comp)
     tokenType = comp.token.type
 
-    if tokenType == T_EOF
+    if tokenType == T_SEMI
         return left
     end
 
@@ -172,7 +200,7 @@ function compiler_mulexpr(comp::Compiler)
         left = ASTNode(compiler_arithop(comp, tokenType), left, right, 0)
         tokenType = comp.token.type
 
-        if tokenType == T_EOF
+        if tokenType == T_SEMI
             break
         end
     end
@@ -180,30 +208,29 @@ function compiler_mulexpr(comp::Compiler)
     return left
 end
 
-function compiler_interpretAST(node::ASTNode)
-    leftVal = 0
-    rightVal = 0
-
-    if node.left != nothing
-        leftVal = compiler_interpretAST(node.left)
-    end
-
-    if node.right != nothing
-        rightVal = compiler_interpretAST(node.right)
-    end
-
-    if node.op == A_ADD
-        return leftVal + rightVal
-    elseif node.op == A_SUBTRACT
-        return leftVal - rightVal
-    elseif node.op == A_MULTIPLY
-        return leftVal * rightVal
-    elseif node.op == A_DIVIDE
-        return convert(Int64, floor(leftVal / rightVal))
-    elseif node.op == A_INTLIT
-        return node.intValue
+function compiler_match(comp::Compiler, type::TokenType, str::String)
+    if comp.token.type == type
+        compiler_scan(comp)
     else
-        throw(ErrorException("Unknown AST operator " * string(node.op)))
+        throw(ErrorException(str * " expected on line " * string(comp.line)))
+    end
+end
+
+function compiler_semi(comp::Compiler)
+    compiler_match(comp, T_SEMI, ";")
+end
+
+function compiler_statements(comp::Compiler, builder::LLVM.Builder, ctx::LLVM.Context, printf_func::LLVM.Function)
+    while true
+        compiler_match(comp, T_PRINT, "print")
+        tree = compiler_binexpr(comp)
+        val = compiler_buildAST(comp, tree, builder, ctx)
+        compiler_print(comp, val, ctx, builder, printf_func)
+        compiler_semi(comp)
+
+        if comp.token.type == T_EOF
+            return
+        end
     end
 end
 
@@ -246,7 +273,7 @@ function compiler_print(comp::Compiler, val::LLVM.Value, ctx::LLVM.Context, buil
     call!(builder, printf_func, [format_arg, val])
 end
 
-function compiler_parse(comp::Compiler, node::ASTNode)
+function compiler_parse(comp::Compiler)
     @dispose ctx=Context() begin
         mod = LLVM.Module("main_module"; ctx)
 
@@ -264,14 +291,12 @@ function compiler_parse(comp::Compiler, node::ASTNode)
         @dispose builder=Builder(ctx) begin
             main_bb = BasicBlock(main_func, "entry"; ctx)
             position!(builder, main_bb)
-            result = compiler_buildAST(comp, node, builder, ctx)
-            compiler_print(comp, result, ctx, builder, printf_func)
+            compiler_statements(comp, builder, ctx, printf_func)
             retval = alloca!(builder, LLVM.Int32Type(ctx))
             retval_ref = LLVM.Value(retval.ref)
             store!(builder, ConstantInt(LLVM.Int32Type(ctx), 0), retval_ref)
             retint = load!(builder, retval_ref)
             ret!(builder, retint)
-            println(mod)
             verify(mod)
         end
 
