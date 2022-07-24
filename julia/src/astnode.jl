@@ -2,7 +2,7 @@ mutable struct ASTNode
     op::ASTNodeOp
     left::Union{ASTNode, Nothing}
     right::Union{ASTNode, Nothing}
-    intValue::Int64
+    value::Union{Int64, LLVM.Value}
 
     function ASTNode(op, left, right, intValue)
         new(op, left, right, intValue)

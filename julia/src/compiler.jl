@@ -6,9 +6,10 @@ mutable struct Compiler
     inFile::IOStream
     token::Token
     text::String
+    globals::Dict{String, LLVM.Value}
 
     function Compiler(i::IOStream)
-        new(1, '\n', i, Token(T_EOF, 0), "")
+        new(1, '\n', i, Token(T_EOF, 0), "", Dict())
     end
 end
 
@@ -64,6 +65,8 @@ function compiler_scan(comp::Compiler)
         comp.token.type = T_SLASH
     elseif c == ';'
         comp.token.type = T_SEMI
+    elseif c == '='
+        comp.token.type = T_EQUALS
     else
         if isdigit(c)
             comp.token.intValue = compiler_scanint(comp, c)
@@ -76,7 +79,7 @@ function compiler_scan(comp::Compiler)
             if tokenType != nothing
                 comp.token.type = tokenType
             else
-                throw(ErrorException("Unrecognized symbol " * comp.text * " on line " * string(comp.line)))
+                comp.token.type = T_IDENT
             end
         else
             throw(ErrorException("Unrecognized character " * c * " on line " * comp.line))
@@ -131,6 +134,8 @@ end
 function compiler_keyword(s::String)
     if s == "print\0"
         return T_PRINT
+    elseif s == "int\0"
+        return T_INT
     end
 
     return nothing
@@ -153,6 +158,16 @@ end
 function compiler_primary(comp::Compiler)
     if comp.token.type == T_INTLIT
         node = ASTNode(A_INTLIT, comp.token.intValue)
+        compiler_scan(comp)
+        return node
+    elseif comp.token.type == T_IDENT
+        id = compiler_find_global(comp, comp.text)
+
+        if id == nothing
+            throw(ErrorException("Unknown variable:" * comp.text * " on line " * string(comp.line)))
+        end
+
+        node = ASTNode(A_IDENT, id)
         compiler_scan(comp)
         return node
     else
@@ -220,18 +235,63 @@ function compiler_semi(comp::Compiler)
     compiler_match(comp, T_SEMI, ";")
 end
 
+function compiler_ident(comp::Compiler)
+    compiler_match(comp, T_IDENT, "identifier")
+end
+
 function compiler_statements(comp::Compiler, builder::LLVM.Builder, ctx::LLVM.Context, printf_func::LLVM.Function)
     while true
-        compiler_match(comp, T_PRINT, "print")
-        tree = compiler_binexpr(comp)
-        val = compiler_buildAST(comp, tree, builder, ctx)
-        compiler_print(comp, val, ctx, builder, printf_func)
-        compiler_semi(comp)
-
-        if comp.token.type == T_EOF
+        if comp.token.type == T_PRINT
+            compiler_print_statement(comp, builder, ctx, printf_func)
+        elseif comp.token.type == T_INT
+            compiler_var_declaration(comp, builder, ctx)
+        elseif comp.token.type == T_IDENT
+            compiler_assignment_statement(comp, builder, ctx)
+        elseif comp.token.type == T_EOF
             return
+        else
+            throw(ErrorException("Syntax error, token:" * string(comp.token.type) * " on line " * string(comp.line)))
         end
     end
+end
+
+function compiler_print_statement(comp::Compiler, builder::LLVM.Builder, ctx::LLVM.Context, printf_func::LLVM.Function)
+    compiler_match(comp, T_PRINT, "print")
+    tree = compiler_binexpr(comp)
+    ret_val = compiler_buildAST(comp, tree, builder, ctx)
+    compiler_print(comp, ret_val, ctx, builder, printf_func)
+    compiler_semi(comp)
+end
+
+function compiler_var_declaration(comp::Compiler, builder::LLVM.Builder, ctx::LLVM.Context)
+    compiler_match(comp, T_INT, "int")
+    compiler_ident(comp)
+    compiler_add_global(comp, comp.text, builder, ctx)
+    compiler_semi(comp)
+end
+
+function compiler_assignment_statement(comp::Compiler, builder::LLVM.Builder, ctx::LLVM.Context)
+    compiler_ident(comp)
+    id = compiler_find_global(comp, comp.text)
+
+    if id == nothing
+        throw(ErrorException("Undeclared variable:" * comp.text * " on line " * string(comp.line)))
+    end
+
+    right = ASTNode(A_LVIDENT, id)
+    compiler_match(comp, T_EQUALS, "=")
+    left = compiler_binexpr(comp)
+    tree = ASTNode(A_ASSIGN, left, right, 0)
+    compiler_buildAST(comp, tree, builder, ctx)
+    compiler_semi(comp)
+end
+
+function compiler_add_global(comp::Compiler, global_var::String, builder::LLVM.Builder, ctx::LLVM.Context)
+    comp.globals[global_var] = alloca!(builder, LLVM.Int32Type(ctx))
+end
+
+function compiler_find_global(comp::Compiler, global_var::String)
+    return get(comp.globals, global_var, nothing)
 end
 
 function compiler_buildAST(comp::Compiler, node::ASTNode, builder::LLVM.Builder, ctx::LLVM.Context)
@@ -256,8 +316,14 @@ function compiler_buildAST(comp::Compiler, node::ASTNode, builder::LLVM.Builder,
         return sdiv!(builder, leftValue, rightValue)
     elseif node.op == A_INTLIT
         val = alloca!(builder, LLVM.Int32Type(ctx))
-        store!(builder, ConstantInt(LLVM.Int32Type(ctx), node.intValue), val)
+        store!(builder, ConstantInt(LLVM.Int32Type(ctx), node.value), val)
         return load!(builder, val)
+    elseif node.op == A_LVIDENT
+        return node.value
+    elseif node.op == A_ASSIGN
+        store!(builder, leftValue, rightValue)
+    elseif node.op == A_IDENT
+        return load!(builder, node.value)
     else
         throw(ErrorException("Invalid op in buildAST " * string(node.op)))
     end

@@ -7,4 +7,7 @@
     T_INTLIT = 5
     T_PRINT  = 6
     T_SEMI   = 7
+    T_EQUALS = 8
+    T_INT    = 9
+    T_IDENT  = 10
 end
