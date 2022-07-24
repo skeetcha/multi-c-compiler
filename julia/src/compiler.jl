@@ -133,16 +133,51 @@ function compiler_primary(comp::Compiler)
 end
 
 function compiler_binexpr(comp::Compiler)
-    left = compiler_primary(comp)
+    return compiler_addexpr(comp)
+end
 
-    if comp.token.type == T_EOF
+function compiler_addexpr(comp::Compiler)
+    left = compiler_mulexpr(comp)
+    tokenType = comp.token.type
+
+    if tokenType == T_EOF
         return left
     end
 
-    nodeType = compiler_arithop(comp, comp.token.type)
-    compiler_scan(comp)
-    right = compiler_binexpr(comp)
-    return ASTNode(nodeType, left, right, 0)
+    while true
+        compiler_scan(comp)
+        right = compiler_mulexpr(comp)
+        left = ASTNode(compiler_arithop(comp, tokenType), left, right, 0)
+        tokenType = comp.token.type
+
+        if tokenType == T_EOF
+            break
+        end
+    end
+
+    return left
+end
+
+function compiler_mulexpr(comp::Compiler)
+    left = compiler_primary(comp)
+    tokenType = comp.token.type
+
+    if tokenType == T_EOF
+        return left
+    end
+
+    while (tokenType == T_STAR) || (tokenType == T_SLASH)
+        compiler_scan(comp)
+        right = compiler_primary(comp)
+        left = ASTNode(compiler_arithop(comp, tokenType), left, right, 0)
+        tokenType = comp.token.type
+
+        if tokenType == T_EOF
+            break
+        end
+    end
+
+    return left
 end
 
 function compiler_interpretAST(node::ASTNode)
