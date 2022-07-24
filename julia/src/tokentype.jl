@@ -1,19 +1,8 @@
-function T_PLUS()
-    return 0
-end
-
-function T_MINUS()
-    return 1
-end
-
-function T_STAR()
-    return 2
-end
-
-function T_SLASH()
-    return 3
-end
-
-function T_INTLIT()
-    return 4
+@enum TokenType begin
+    T_EOF = 0
+    T_PLUS = 1
+    T_MINUS = 2
+    T_STAR = 3
+    T_SLASH = 4
+    T_INTLIT = 5
 end

@@ -5,7 +5,7 @@ mutable struct Compiler
     token::Token
 
     function Compiler(i::IOStream)
-        new(1, '\n', i, Token(-1, 0))
+        new(1, '\n', i, Token(T_EOF, 0))
     end
 end
 
@@ -49,19 +49,20 @@ function compiler_scan(comp::Compiler)
     c = compiler_skip(comp)
 
     if c == '\0'
+        comp.token.type = T_EOF
         return false
     elseif c == '+'
-        comp.token.type = T_PLUS()
+        comp.token.type = T_PLUS
     elseif c == '-'
-        comp.token.type = T_MINUS()
+        comp.token.type = T_MINUS
     elseif c == '*'
-        comp.token.type = T_STAR()
+        comp.token.type = T_STAR
     elseif c == '/'
-        comp.token.type = T_SLASH()
+        comp.token.type = T_SLASH
     else
         if isdigit(c)
             comp.token.intValue = compiler_scanint(comp, c)
-            comp.token.type = T_INTLIT()
+            comp.token.type = T_INTLIT
             return true
         else
             throw(ErrorException("Unrecognized character " * c * " on line " * comp.line))
@@ -95,30 +96,78 @@ function compiler_scanint(comp::Compiler, c::Char)
     return val
 end
 
-function tokenToString(token::Int64)
-    if token == T_PLUS()
-        return "+"
-    elseif token == T_MINUS()
-        return "-"
-    elseif token == T_STAR()
-        return "*"
-    elseif token == T_SLASH()
-        return "/"
-    elseif token == T_INTLIT()
-        return "intlit"
-    else
-        throw(ErrorException("invalid token " * string(token)))
-    end
-end
-
 function compiler_scanfile(comp::Compiler)
     while compiler_scan(comp)
         print("Token " * tokenToString(comp.token.type))
 
-        if comp.token.type == T_INTLIT()
+        if comp.token.type == T_INTLIT
             print(", value " * string(comp.token.intValue))
         end
 
         println("")
+    end
+end
+
+function compiler_arithop(comp::Compiler, token::TokenType)
+    if token == T_PLUS
+        return A_ADD
+    elseif token == T_MINUS
+        return A_SUBTRACT
+    elseif token == T_STAR
+        return A_MULTIPLY
+    elseif token == T_SLASH
+        return A_DIVIDE
+    else
+        throw(ErrorException("Unknown token in arithop() on line " * string(comp.line) * " - token " * string(token)))
+    end
+end
+
+function compiler_primary(comp::Compiler)
+    if comp.token.type == T_INTLIT
+        node = ASTNode(A_INTLIT, comp.token.intValue)
+        compiler_scan(comp)
+        return node
+    else
+        throw(ErrorException("Syntax error on line " * string(comp.line) * " - token " * string(comp.token.type)))
+    end
+end
+
+function compiler_binexpr(comp::Compiler)
+    left = compiler_primary(comp)
+
+    if comp.token.type == T_EOF
+        return left
+    end
+
+    nodeType = compiler_arithop(comp, comp.token.type)
+    compiler_scan(comp)
+    right = compiler_binexpr(comp)
+    return ASTNode(nodeType, left, right, 0)
+end
+
+function compiler_interpretAST(node::ASTNode)
+    leftVal = 0
+    rightVal = 0
+
+    if node.left != nothing
+        leftVal = compiler_interpretAST(node.left)
+    end
+
+    if node.right != nothing
+        rightVal = compiler_interpretAST(node.right)
+    end
+
+    if node.op == A_ADD
+        return leftVal + rightVal
+    elseif node.op == A_SUBTRACT
+        return leftVal - rightVal
+    elseif node.op == A_MULTIPLY
+        return leftVal * rightVal
+    elseif node.op == A_DIVIDE
+        return convert(Int64, floor(leftVal / rightVal))
+    elseif node.op == A_INTLIT
+        return node.intValue
+    else
+        throw(ErrorException("Unknown AST operator " * string(node.op)))
     end
 end

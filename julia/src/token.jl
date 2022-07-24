@@ -1,4 +1,4 @@
 mutable struct Token
-    type::Int64
+    type::TokenType
     intValue::Int64
 end
