@@ -87,22 +87,25 @@ bool Compiler::scan() {
         case ';':
             token.type = TokenType::T_Semi;
             break;
+        case '=':
+            token.type = TokenType::T_Equals;
+            break;
         default:
             if (isdigit(c)) {
                 token.intValue = scanint(c);
                 token.type = TokenType::T_IntLit;
                 break;
             } else if ((isalpha(c)) || (c == '_')) {
-                string text = scanident(c);
+                text = scanident(c);
                 TokenType newTokenType = keyword(text);
 
                 if (newTokenType != TokenType::T_EOF) {
                     token.type = newTokenType;
-                    break;
                 } else {
-                    cerr << "Unrecognized symbol " << text << " on line " << line << endl;
-                    exit(1);
+                    token.type = TokenType::T_Ident;
                 }
+
+                break;
             }
 
             cerr << "Unrecognized character " << c << " on line " << line << endl;
@@ -156,6 +159,8 @@ string Compiler::scanident(char c) {
 TokenType Compiler::keyword(string s) {
     if (s == "print") {
         return TokenType::T_Print;
+    } else if (s == "int") {
+        return TokenType::T_Int;
     }
 
     return TokenType::T_EOF;
@@ -190,12 +195,28 @@ void Compiler::semi() {
     match(TokenType::T_Semi, ";");
 }
 
-ASTNode* Compiler::number() {
+void Compiler::ident() {
+    match(TokenType::T_Ident, "identifier");
+}
+
+ASTNode* Compiler::primary() {
     ASTNode* node;
+    Value* id;
 
     switch (token.type) {
         case TokenType::T_IntLit:
-            node = new ASTNode(ASTNodeOp::A_IntLit, token.intValue);
+            node = new ASTNode(ASTNodeOp::A_IntLit, (int)token.intValue);
+            scan();
+            return node;
+        case TokenType::T_Ident:
+            id = findglobal(text);
+
+            if (id == nullptr) {
+                cerr << "Unknown variable" << ":" << text << " on line " << line << endl;
+                exit(1);
+            }
+
+            node = new ASTNode(ASTNodeOp::A_Ident, id);
             scan();
             return node;
         default:
@@ -231,7 +252,7 @@ ASTNode* Compiler::add_expr() {
 }
 
 ASTNode* Compiler::mul_expr() {
-    ASTNode* left = number();
+    ASTNode* left = primary();
     TokenType tokenType = token.type;
 
     if (tokenType == TokenType::T_Semi) {
@@ -240,7 +261,7 @@ ASTNode* Compiler::mul_expr() {
 
     while ((tokenType == TokenType::T_Star) || (tokenType == TokenType::T_Slash)) {
         scan();
-        ASTNode* right = number();
+        ASTNode* right = primary();
         left = new ASTNode(arithop(tokenType), left, right, 0);
         tokenType = token.type;
 
@@ -254,30 +275,85 @@ ASTNode* Compiler::mul_expr() {
 
 void Compiler::statements(IRBuilder<>* builder, FunctionType* printf_type, Function* printf_fn, LLVMContext* context) {
     while (true) {
-        match(TokenType::T_Print, "print");
-        ASTNode* tree = expr();
-        Value* ret_val = buildAST(tree, builder);
-        delete tree;
-        generatePrint(builder, ret_val, printf_type, printf_fn, context);
-        semi();
-
-        if (token.type == TokenType::T_EOF) {
-            return;
+        switch (token.type) {
+            case TokenType::T_Print:
+                print_statement(builder, context, printf_type, printf_fn);
+                break;
+            case TokenType::T_Int:
+                var_declaration(builder, context);
+                break;
+            case TokenType::T_Ident:
+                assignment_statement(builder, context);
+                break;
+            case TokenType::T_EOF:
+                return;
+            default:
+                cerr << "Syntax error, token" << ":" << token.type << " on line " << line << endl;
+                exit(1);
         }
     }
 }
 
-Value* Compiler::buildAST(ASTNode* node, IRBuilder<>* builder) {
+void Compiler::print_statement(IRBuilder<>* builder, LLVMContext* context, FunctionType* printf_type, Function* printf_fn) {
+    match(TokenType::T_Print, "print");
+    ASTNode* tree = expr();
+    Value* ret_val = buildAST(tree, builder, context);
+    generatePrint(builder, ret_val, printf_type, printf_fn, context);
+    delete tree;
+    semi();
+}
+
+void Compiler::var_declaration(IRBuilder<>* builder, LLVMContext* context) {
+    match(T_Int, "int");
+    ident();
+    addglobal(text, builder, context);
+    semi();
+}
+
+void Compiler::assignment_statement(IRBuilder<>* builder, LLVMContext* context) {
+    ident();
+    Value* id;
+
+    if ((id = findglobal(text)) == nullptr) {
+        cerr << "Undeclared variable" << ":" << text << " on line " << line << endl;
+        exit(1);
+    }
+
+    ASTNode* right = new ASTNode(ASTNodeOp::A_LVIdent, id);
+    match(T_Equals, "=");
+    ASTNode* left = expr();
+    ASTNode* tree = new ASTNode(A_Assign, left, right, (int)0);
+    buildAST(tree, builder, context);
+    delete tree;
+    semi();
+}
+
+void Compiler::addglobal(string global_var, IRBuilder<>* builder, LLVMContext* context) {
+    AllocaInst* inst = builder->CreateAlloca(Type::getInt32Ty(*context), 5);
+    globals.insert(pair<string, Value*>(global_var, inst));
+}
+
+Value* Compiler::findglobal(string global_var) {
+    try {
+        return globals.at(global_var);
+    } catch (const out_of_range& err) {
+        return nullptr;
+    } catch (const exception& e) {
+        throw e;
+    }
+}
+
+Value* Compiler::buildAST(ASTNode* node, IRBuilder<>* builder, LLVMContext* context) {
     Value* leftVal;
     Value* rightVal;
 
     if (node->left) {
-        leftVal = buildAST(node->left, builder);
+        leftVal = buildAST(node->left, builder, context);
         delete node->left;
     }
 
     if (node->right) {
-        rightVal = buildAST(node->right, builder);
+        rightVal = buildAST(node->right, builder, context);
         delete node->right;
     }
 
@@ -291,7 +367,14 @@ Value* Compiler::buildAST(ASTNode* node, IRBuilder<>* builder) {
         case ASTNodeOp::A_Divide:
             return builder->CreateSDiv(leftVal, rightVal);
         case ASTNodeOp::A_IntLit:
-            return builder->getInt32((uint32_t)node->intValue);
+            return builder->getInt32((uint32_t)get<int>(node->value));
+        case ASTNodeOp::A_LVIdent:
+            return get<Value*>(node->value);
+        case ASTNodeOp::A_Assign:
+            builder->CreateStore(leftVal, rightVal);
+            return nullptr;
+        case ASTNodeOp::A_Ident:
+            return builder->CreateLoad(Type::getInt32Ty(*context), get<Value*>(node->value));
         default:
             cerr << "unreocnigzed node in ast " << node->op << endl;
             exit(1);

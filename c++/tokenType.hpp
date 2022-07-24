@@ -8,5 +8,8 @@ enum TokenType {
     T_Slash,
     T_IntLit,
     T_Print,
-    T_Semi
+    T_Semi,
+    T_Equals,
+    T_Int,
+    T_Ident
 };
