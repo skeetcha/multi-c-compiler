@@ -28,6 +28,7 @@ Compiler Compiler_new(char* filename) {
     comp.putback = '\n';
     comp.token.type = T_EOF;
     comp.token.intValue = 0;
+    comp.globals = g_hash_table_new(g_str_hash, g_str_equal);
     return comp;
 }
 
@@ -83,22 +84,24 @@ bool Compiler_scan(Compiler* comp) {
         case ';':
             comp->token.type = T_SEMI;
             break;
+        case '=':
+            comp->token.type = T_EQUALS;
+            break;
         default:
             if (isdigit(c)) {
                 comp->token.intValue = Compiler_scanint(comp, c);
                 comp->token.type = T_INTLIT;
                 break;
             } else if ((isalpha(c)) || (c == '_')) {
-                char text[512];
-                Compiler_scanident(comp, c, text);
-                TokenType newTokenType = Compiler_keyword(comp, text);
+                Compiler_scanident(comp, c, comp->text);
+                TokenType newTokenType = Compiler_keyword(comp, comp->text);
 
                 if (newTokenType != T_EOF) {
                     comp->token.type = newTokenType;
                     break;
                 } else {
-                    fprintf(stderr, "Unrecognized symbol %s on line %d\n", text, comp->line);
-                    exit(1);
+                    comp->token.type = T_IDENT;
+                    break;
                 }
             }
 
@@ -149,10 +152,19 @@ void Compiler_scanident(Compiler* comp, char c, char* buf) {
 }
 
 TokenType Compiler_keyword(Compiler* comp, char* s) {
-    if (s[0] == 'p') {
-        if (strcmp(s, "print\0") == 0) {
-            return T_PRINT;
-        }
+    switch (s[0]) {
+        case 'p':
+            if (strcmp(s, "print\0") == 0) {
+                return T_PRINT;
+            }
+
+            break;
+        case 'i':
+            if (strcmp(s, "int\0") == 0) {
+                return T_INT;
+            }
+
+            break;
     }
 
     return T_EOF;
@@ -171,6 +183,10 @@ void Compiler_semi(Compiler* comp) {
     Compiler_match(comp, T_SEMI, ";");
 }
 
+void Compiler_ident(Compiler* comp) {
+    Compiler_match(comp, T_IDENT, "identifier");
+}
+
 ASTNodeOp Compiler_arithop(Compiler* comp, TokenType tok) {
     switch (tok) {
         case T_PLUS:
@@ -187,18 +203,32 @@ ASTNodeOp Compiler_arithop(Compiler* comp, TokenType tok) {
     }
 }
 
-ASTNode* Compiler_number(Compiler* comp) {
+ASTNode* Compiler_primary(Compiler* comp) {
     ASTNode* node;
+    LLVMValueRef id;
     
     switch (comp->token.type) {
         case T_INTLIT:
-            node = mkAstLeaf(A_INTLIT, comp->token.intValue);
-            Compiler_scan(comp);
-            return node;
+            node = mkAstLeaf_int(A_INTLIT, comp->token.intValue);
+            break;
+        case T_IDENT:
+            id = Compiler_find_global(comp, comp->text);
+
+            if (id == NULL) {
+                fprintf(stderr, "Unknown variable:%s on line %d\n", comp->text, comp->line);
+                exit(1);
+            }
+
+            node = mkAstLeaf_value(A_IDENT, id);
+            break;
         default:
             fprintf(stderr, "Syntax error on line %d\n", comp->line);
             exit(1);
     }
+
+    
+    Compiler_scan(comp);
+    return node;
 }
 
 ASTNode* Compiler_expr(Compiler* comp) {
@@ -216,7 +246,7 @@ ASTNode* Compiler_add_expr(Compiler* comp) {
     while (true) {
         Compiler_scan(comp);
         ASTNode* right = Compiler_mul_expr(comp);
-        left = mkAstNode(Compiler_arithop(comp, tokenType), left, right, 0);
+        left = mkAstNode_int(Compiler_arithop(comp, tokenType), left, right, 0);
         tokenType = comp->token.type;
 
         if (tokenType == T_SEMI) {
@@ -228,7 +258,7 @@ ASTNode* Compiler_add_expr(Compiler* comp) {
 }
 
 ASTNode* Compiler_mul_expr(Compiler* comp) {
-    ASTNode* left = Compiler_number(comp);
+    ASTNode* left = Compiler_primary(comp);
     TokenType tokenType = comp->token.type;
 
     if (tokenType == T_SEMI) {
@@ -237,8 +267,8 @@ ASTNode* Compiler_mul_expr(Compiler* comp) {
 
     while ((tokenType == T_STAR) || (tokenType == T_SLASH)) {
         Compiler_scan(comp);
-        ASTNode* right = Compiler_number(comp);
-        left = mkAstNode(Compiler_arithop(comp, tokenType), left, right, 0);
+        ASTNode* right = Compiler_primary(comp);
+        left = mkAstNode_int(Compiler_arithop(comp, tokenType), left, right, 0);
         tokenType = comp->token.type;
 
         if (tokenType == T_SEMI) {
@@ -251,17 +281,64 @@ ASTNode* Compiler_mul_expr(Compiler* comp) {
 
 void Compiler_statements(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context, LLVMTypeRef printf_type, LLVMValueRef printf_func) {
     while (true) {
-        Compiler_match(comp, T_PRINT, "print");
-        ASTNode* tree = Compiler_expr(comp);
-        LLVMValueRef ret_val = Compiler_buildAST(comp, tree, builder, context);
-        free(tree);
-        Compiler_generatePrint(comp, builder, context, printf_type, printf_func, ret_val);
-        Compiler_semi(comp);
-
-        if (comp->token.type == T_EOF) {
-            return;
+        switch (comp->token.type) {
+            case T_PRINT:
+                Compiler_print_statement(comp, builder, context, printf_type, printf_func);
+                break;
+            case T_INT:
+                Compiler_var_declaration(comp, builder, context);
+                break;
+            case T_IDENT:
+                Compiler_assignment_statement(comp, builder, context);
+                break;
+            case T_EOF:
+                return;
+            default:
+                fprintf(stderr, "Syntax error, token:%d on line %d\n", comp->token.type, comp->line);
+                exit(1);
         }
     }
+}
+
+void Compiler_print_statement(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context, LLVMTypeRef printf_type, LLVMValueRef printf_func) {
+    Compiler_match(comp, T_PRINT, "print");
+    ASTNode* node = Compiler_expr(comp);
+    LLVMValueRef ret_val = Compiler_buildAST(comp, node, builder, context);
+    Compiler_generatePrint(comp, builder, context, printf_type, printf_func, ret_val);
+    Compiler_semi(comp);
+}
+
+void Compiler_var_declaration(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context) {
+    Compiler_match(comp, T_INT, "int");
+    Compiler_ident(comp);
+    Compiler_add_global(comp, comp->text, builder, context);
+    Compiler_semi(comp);
+}
+
+void Compiler_assignment_statement(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context) {
+    Compiler_ident(comp);
+    LLVMValueRef id;
+    
+    if ((id = Compiler_find_global(comp, comp->text)) == NULL) {
+        fprintf("Undeclared variable:%s on line %d\n", comp->text, comp->line);
+        exit(1);
+    }
+
+    ASTNode* right = mkAstLeaf_value(A_LVIDENT, id);
+    Compiler_match(comp, T_EQUALS, "=");
+    ASTNode* left = Compiler_expr(comp);
+    ASTNode* tree = mkAstNode_int(A_ASSIGN, left, right, 0);
+    Compiler_buildAST(comp, tree, builder, context);
+    Compiler_semi(comp);
+}
+
+void Compiler_add_global(Compiler* comp, char* global_var, LLVMBuilderRef builder, LLVMContextRef context) {
+    LLVMValueRef val = LLVMBuildAlloca(builder, LLVMInt32TypeInContext(context), global_var);
+    g_hash_table_insert(comp->globals, global_var, val);
+}
+
+LLVMValueRef Compiler_find_global(Compiler* comp, char* global_var) {
+    return g_hash_table_lookup(comp->globals, global_var);
 }
 
 LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef builder, LLVMContextRef context) {
@@ -289,6 +366,18 @@ LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef bui
             return LLVMBuildSDiv(builder, leftVal, rightVal, "div");
         case A_INTLIT:
             return LLVMConstInt(LLVMInt32TypeInContext(context), node->intValue, false);
+        case A_LVIDENT:
+            if (node->nodeType != ANT_VALUE) {
+                fprintf(stderr, "Invalid node type:%d\n", node->nodeType);
+                exit(1);
+            }
+
+            return node->val;
+        case A_ASSIGN:
+            LLVMBuildStore(builder, leftVal, rightVal);
+            return NULL;
+        case A_IDENT:
+            return LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), node->val, "load");
         default:
             fprintf(stderr, "unrecognized node in ast %d\n", node->op);
             exit(1);
@@ -387,4 +476,5 @@ void Compiler_run(Compiler* comp) {
     Compiler_scan(comp);
     Compiler_parse(comp);
     fclose(comp->inFile);
+    g_hash_table_destroy(comp->globals);
 }

@@ -9,7 +9,10 @@ typedef enum {
     T_SLASH,
     T_INTLIT,
     T_PRINT,
-    T_SEMI
+    T_SEMI,
+    T_EQUALS,
+    T_INT,
+    T_IDENT
 } TokenType;
 
 #endif
