@@ -32,11 +32,11 @@ void Compiler_match(Compiler* comp, TokenType ttype, char* tstr);
 void Compiler_semi(Compiler* comp);
 void Compiler_ident(Compiler* comp);
 
+int Compiler_op_precedence(Compiler* comp, TokenType type);
+
 ASTNodeOp Compiler_arithop(Compiler* comp, TokenType tok);
 ASTNode* Compiler_primary(Compiler* comp);
-ASTNode* Compiler_expr(Compiler* comp);
-ASTNode* Compiler_add_expr(Compiler* comp);
-ASTNode* Compiler_mul_expr(Compiler* comp);
+ASTNode* Compiler_binexpr(Compiler* comp, int ptp);
 
 void Compiler_statements(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context, LLVMTypeRef printf_type, LLVMValueRef printf_func);
 void Compiler_print_statement(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context, LLVMTypeRef printf_type, LLVMValueRef printf_func);

@@ -85,7 +85,40 @@ bool Compiler_scan(Compiler* comp) {
             comp->token.type = T_SEMI;
             break;
         case '=':
-            comp->token.type = T_EQUALS;
+            if ((c = Compiler_next(comp)) == '=') {
+                comp->token.type = T_EQUAL;
+            } else {
+                comp->putback = c;
+                comp->token.type = T_ASSIGN;
+            }
+
+            break;
+        case '!':
+            if ((c = Compiler_next(comp)) == '=') {
+                comp->token.type = T_NOTEQUAL;
+            } else {
+                fprintf(stderr, "Unrecognized character:%c on line %d\n", c, comp->line);
+                exit(1);
+            }
+
+            break;
+        case '<':
+            if ((c = Compiler_next(comp)) == '=') {
+                comp->token.type = T_LESSEQUAL;
+            } else {
+                comp->putback = c;
+                comp->token.type = T_LESSTHAN;
+            }
+
+            break;
+        case '>':
+            if ((c = Compiler_next(comp)) == '=') {
+                comp->token.type = T_GREATEREQUAL;
+            } else {
+                comp->putback = c;
+                comp->token.type = T_GREATERTHAN;
+            }
+
             break;
         default:
             if (isdigit(c)) {
@@ -187,20 +220,31 @@ void Compiler_ident(Compiler* comp) {
     Compiler_match(comp, T_IDENT, "identifier");
 }
 
-ASTNodeOp Compiler_arithop(Compiler* comp, TokenType tok) {
-    switch (tok) {
-        case T_PLUS:
-            return A_ADD;
-        case T_MINUS:
-            return A_SUBTRACT;
-        case T_STAR:
-            return A_MULTIPLY;
-        case T_SLASH:
-            return A_DIVIDE;
-        default:
-            fprintf(stderr, "Invalid token on line %d\n", comp->line);
-            exit(1);
+int opPrec[] = {
+    0, 10, 10,      // T_EOF, T_PLUS, T_MINUS
+    20, 20,         // T_STAR, T_SLASH
+    30, 30,         // T_EQUAL, T_NOTEQUAL
+    40, 40, 40, 40  // T_LESSTHAN, T_GREATERTHAN, T_LESSEQUAL, T_GREATEREQUAL
+};
+
+int Compiler_op_precedence(Compiler* comp, TokenType type) {
+    int prec = opPrec[type];
+
+    if (prec == 0) {
+        fprintf(stderr, "Syntax error, token:%d on line %d\n", type, comp->line);
+        exit(1);
     }
+
+    return prec;
+}
+
+ASTNodeOp Compiler_arithop(Compiler* comp, TokenType tok) {
+    if ((tok > T_EOF) && (tok < T_INTLIT)) {
+        return (ASTNodeOp)tok;
+    }
+
+    fprintf(stderr, "Syntax error, token:%d on line %d\n", tok, comp->line);
+    exit(1);
 }
 
 ASTNode* Compiler_primary(Compiler* comp) {
@@ -231,33 +275,7 @@ ASTNode* Compiler_primary(Compiler* comp) {
     return node;
 }
 
-ASTNode* Compiler_expr(Compiler* comp) {
-    return Compiler_add_expr(comp);
-}
-
-ASTNode* Compiler_add_expr(Compiler* comp) {
-    ASTNode* left = Compiler_mul_expr(comp);
-    TokenType tokenType = comp->token.type;
-
-    if (tokenType == T_SEMI) {
-        return left;
-    }
-
-    while (true) {
-        Compiler_scan(comp);
-        ASTNode* right = Compiler_mul_expr(comp);
-        left = mkAstNode_int(Compiler_arithop(comp, tokenType), left, right, 0);
-        tokenType = comp->token.type;
-
-        if (tokenType == T_SEMI) {
-            break;
-        }
-    }
-
-    return left;
-}
-
-ASTNode* Compiler_mul_expr(Compiler* comp) {
+ASTNode* Compiler_binexpr(Compiler* comp, int ptp) {
     ASTNode* left = Compiler_primary(comp);
     TokenType tokenType = comp->token.type;
 
@@ -265,14 +283,14 @@ ASTNode* Compiler_mul_expr(Compiler* comp) {
         return left;
     }
 
-    while ((tokenType == T_STAR) || (tokenType == T_SLASH)) {
+    while (Compiler_op_precedence(comp, tokenType) > ptp) {
         Compiler_scan(comp);
-        ASTNode* right = Compiler_primary(comp);
+        ASTNode* right = Compiler_binexpr(comp, opPrec[tokenType]);
         left = mkAstNode_int(Compiler_arithop(comp, tokenType), left, right, 0);
         tokenType = comp->token.type;
 
         if (tokenType == T_SEMI) {
-            break;
+            return left;
         }
     }
 
@@ -302,7 +320,7 @@ void Compiler_statements(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef 
 
 void Compiler_print_statement(Compiler* comp, LLVMBuilderRef builder, LLVMContextRef context, LLVMTypeRef printf_type, LLVMValueRef printf_func) {
     Compiler_match(comp, T_PRINT, "print");
-    ASTNode* node = Compiler_expr(comp);
+    ASTNode* node = Compiler_binexpr(comp, 0);
     LLVMValueRef ret_val = Compiler_buildAST(comp, node, builder, context);
     Compiler_generatePrint(comp, builder, context, printf_type, printf_func, ret_val);
     Compiler_semi(comp);
@@ -325,8 +343,8 @@ void Compiler_assignment_statement(Compiler* comp, LLVMBuilderRef builder, LLVMC
     }
 
     ASTNode* right = mkAstLeaf_value(A_LVIDENT, id);
-    Compiler_match(comp, T_EQUALS, "=");
-    ASTNode* left = Compiler_expr(comp);
+    Compiler_match(comp, T_ASSIGN, "=");
+    ASTNode* left = Compiler_binexpr(comp, 0);
     ASTNode* tree = mkAstNode_int(A_ASSIGN, left, right, 0);
     Compiler_buildAST(comp, tree, builder, context);
     Compiler_semi(comp);
@@ -344,6 +362,7 @@ LLVMValueRef Compiler_find_global(Compiler* comp, char* global_var) {
 LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef builder, LLVMContextRef context) {
     LLVMValueRef leftVal;
     LLVMValueRef rightVal;
+    LLVMValueRef icmpVal;
 
     if (node->left) {
         leftVal = Compiler_buildAST(comp, node->left, builder, context);
@@ -378,6 +397,24 @@ LLVMValueRef Compiler_buildAST(Compiler* comp, ASTNode* node, LLVMBuilderRef bui
             return NULL;
         case A_IDENT:
             return LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), node->val, "load");
+        case A_EQUAL:
+            icmpVal = LLVMBuildICmp(builder, LLVMIntEQ, leftVal, rightVal, "icmp");
+            return LLVMBuildZExt(builder, icmpVal, LLVMInt32TypeInContext(context), "zext");
+        case A_NOTEQUAL:
+            icmpVal = LLVMBuildICmp(builder, LLVMIntNE, leftVal, rightVal, "icmp");
+            return LLVMBuildZExt(builder, icmpVal, LLVMInt32TypeInContext(context), "zext");
+        case A_LESSTHAN:
+            icmpVal = LLVMBuildICmp(builder, LLVMIntSLT, leftVal, rightVal, "icmp");
+            return LLVMBuildZExt(builder, icmpVal, LLVMInt32TypeInContext(context), "zext");
+        case A_GREATERTHAN:
+            icmpVal = LLVMBuildICmp(builder, LLVMIntSGT, leftVal, rightVal, "icmp");
+            return LLVMBuildZExt(builder, icmpVal, LLVMInt32TypeInContext(context), "zext");
+        case A_LESSEQUAL:
+            icmpVal = LLVMBuildICmp(builder, LLVMIntSLE, leftVal, rightVal, "icmp");
+            return LLVMBuildZExt(builder, icmpVal, LLVMInt32TypeInContext(context), "zext");
+        case A_GREATEREQUAL:
+            icmpVal = LLVMBuildICmp(builder, LLVMIntSGE, leftVal, rightVal, "icmp");
+            return LLVMBuildZExt(builder, icmpVal, LLVMInt32TypeInContext(context), "zext");
         default:
             fprintf(stderr, "unrecognized node in ast %d\n", node->op);
             exit(1);
