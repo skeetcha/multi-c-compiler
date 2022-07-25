@@ -66,7 +66,40 @@ function compiler_scan(comp::Compiler)
     elseif c == ';'
         comp.token.type = T_SEMI
     elseif c == '='
-        comp.token.type = T_EQUALS
+        c = compiler_next(comp)
+
+        if c == '='
+            comp.token.type = T_EQUAL
+        else
+            comp.putback = c
+            comp.token.type = T_ASSIGN
+        end
+    elseif c == '!'
+        c = compiler_next(comp)
+
+        if c == '='
+            comp.token.type = T_NOTEQUAL
+        else
+            throw(ErrorException("Unrecognized character:" * c * " on line " * string(comp.line)))
+        end
+    elseif c == '<'
+        c = compiler_next(comp)
+
+        if c == '='
+            comp.token.type = T_LESSEQUAL
+        else
+            comp.putback = c
+            comp.token.type = T_LESSTHAN
+        end
+    elseif c == '>'
+        c = compiler_next(comp)
+
+        if c == '='
+            comp.token.type = T_GREATEREQUAL
+        else
+            comp.putback = c
+            comp.token.type = T_GREATERTHAN
+        end
     else
         if isdigit(c)
             comp.token.intValue = compiler_scanint(comp, c)
@@ -150,8 +183,20 @@ function compiler_arithop(comp::Compiler, token::TokenType)
         return A_MULTIPLY
     elseif token == T_SLASH
         return A_DIVIDE
+    elseif token == T_EQUAL
+        return A_EQUAL
+    elseif token == T_NOTEQUAL
+        return A_NOTEQUAL
+    elseif token == T_LESSTHAN
+        return A_LESSTHAN
+    elseif token == T_GREATERTHAN
+        return A_GREATERTHAN
+    elseif token == T_LESSEQUAL
+        return A_LESSEQUAL
+    elseif token == T_GREATEREQUAL
+        return A_GREATEREQUAL
     else
-        throw(ErrorException("Unknown token in arithop() on line " * string(comp.line) * " - token " * string(token)))
+        throw(ErrorException("Syntax error, token:" * string(token) * " on line " * string(comp.line)))
     end
 end
 
@@ -175,33 +220,21 @@ function compiler_primary(comp::Compiler)
     end
 end
 
-function compiler_binexpr(comp::Compiler)
-    return compiler_addexpr(comp)
+function compiler_opPrec(comp::Compiler, tokenType::TokenType)
+    if tokenType == T_EOF
+        throw(ErrorException("Syntax error, token:" * string(tokenType) * " on line " * string(comp.line)))
+    elseif (tokenType == T_PLUS) || (tokenType == T_MINUS)
+        return 10
+    elseif (tokenType == T_STAR) || (tokenType == T_SLASH)
+        return 20
+    elseif (tokenType == T_EQUAL) || (tokenType == T_NOTEQUAL)
+        return 30
+    elseif (tokenType == T_LESSTHAN) || (tokenType == T_GREATERTHAN) || (tokenType == T_LESSEQUAL) || (tokenType == T_GREATEREQUAL)
+        return 40
+    end
 end
 
-function compiler_addexpr(comp::Compiler)
-    left = compiler_mulexpr(comp)
-    tokenType = comp.token.type
-
-    if tokenType == T_SEMI
-        return left
-    end
-
-    while true
-        compiler_scan(comp)
-        right = compiler_mulexpr(comp)
-        left = ASTNode(compiler_arithop(comp, tokenType), left, right, 0)
-        tokenType = comp.token.type
-
-        if tokenType == T_SEMI
-            break
-        end
-    end
-
-    return left
-end
-
-function compiler_mulexpr(comp::Compiler)
+function compiler_binexpr(comp::Compiler, ptp::Int64)
     left = compiler_primary(comp)
     tokenType = comp.token.type
 
@@ -209,15 +242,19 @@ function compiler_mulexpr(comp::Compiler)
         return left
     end
 
-    while (tokenType == T_STAR) || (tokenType == T_SLASH)
+    op_precedence = compiler_opPrec(comp, tokenType)
+
+    while compiler_opPrec(comp, tokenType) > ptp
         compiler_scan(comp)
-        right = compiler_primary(comp)
+        right = compiler_binexpr(comp, op_precedence)
         left = ASTNode(compiler_arithop(comp, tokenType), left, right, 0)
         tokenType = comp.token.type
 
         if tokenType == T_SEMI
-            break
+            return left
         end
+
+        op_precedence = compiler_opPrec(comp, tokenType)
     end
 
     return left
@@ -257,7 +294,7 @@ end
 
 function compiler_print_statement(comp::Compiler, builder::LLVM.Builder, ctx::LLVM.Context, printf_func::LLVM.Function)
     compiler_match(comp, T_PRINT, "print")
-    tree = compiler_binexpr(comp)
+    tree = compiler_binexpr(comp, 0)
     ret_val = compiler_buildAST(comp, tree, builder, ctx)
     compiler_print(comp, ret_val, ctx, builder, printf_func)
     compiler_semi(comp)
@@ -279,8 +316,8 @@ function compiler_assignment_statement(comp::Compiler, builder::LLVM.Builder, ct
     end
 
     right = ASTNode(A_LVIDENT, id)
-    compiler_match(comp, T_EQUALS, "=")
-    left = compiler_binexpr(comp)
+    compiler_match(comp, T_ASSIGN, "=")
+    left = compiler_binexpr(comp, 0)
     tree = ASTNode(A_ASSIGN, left, right, 0)
     compiler_buildAST(comp, tree, builder, ctx)
     compiler_semi(comp)
@@ -324,6 +361,24 @@ function compiler_buildAST(comp::Compiler, node::ASTNode, builder::LLVM.Builder,
         store!(builder, leftValue, rightValue)
     elseif node.op == A_IDENT
         return load!(builder, node.value)
+    elseif node.op == A_EQUAL
+        val = icmp!(builder, LLVM.API.LLVMIntEQ, leftValue, rightValue)
+        return zext!(builder, val, LLVM.Int32Type(ctx))
+    elseif node.op == A_NOTEQUAL
+        val = icmp!(builder, LLVM.API.LLVMIntNE, leftValue, rightValue)
+        return zext!(builder, val, LLVM.Int32Type(ctx))
+    elseif node.op == A_LESSTHAN
+        val = icmp!(builder, LLVM.API.LLVMIntSLT, leftValue, rightValue)
+        return zext!(builder, val, LLVM.Int32Type(ctx))
+    elseif node.op == A_LESSEQUAL
+        val = icmp!(builder, LLVM.API.LLVMIntSLE, leftValue, rightValue)
+        return zext!(builder, val, LLVM.Int32Type(ctx))
+    elseif node.op == A_GREATERTHAN
+        val = icmp!(builder, LLVM.API.LLVMIntSGT, leftValue, rightValue)
+        return zext!(builder, val, LLVM.Int32Type(ctx))
+    elseif node.op == A_GREATEREQUAL
+        val = icmp!(builder, LLVM.API.LLVMIntSGE, leftValue, rightValue)
+        return zext!(builder, val, LLVM.Int32Type(ctx))
     else
         throw(ErrorException("Invalid op in buildAST " * string(node.op)))
     end
