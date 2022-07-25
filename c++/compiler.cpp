@@ -88,7 +88,40 @@ bool Compiler::scan() {
             token.type = TokenType::T_Semi;
             break;
         case '=':
-            token.type = TokenType::T_Equals;
+            if ((c = next()) == '=') {
+                token.type = TokenType::T_Equal;
+            } else {
+                putback = c;
+                token.type = TokenType::T_Assign;
+            }
+
+            break;
+        case '!':
+            if ((c = next()) == '=') {
+                token.type = TokenType::T_NotEqual;
+            } else {
+                cerr << "Unrecognized character" << ":" << c << " on line " << line << endl;
+                exit(1);
+            }
+
+            break;
+        case '<':
+            if ((c = next()) == '=') {
+                token.type = TokenType::T_LessEqual;
+            } else {
+                putback = c;
+                token.type = TokenType::T_LessThan;
+            }
+
+            break;
+        case '>':
+            if ((c = next()) == '=') {
+                token.type = TokenType::T_GreaterEqual;
+            } else {
+                putback = c;
+                token.type = TokenType::T_GreaterThan;
+            }
+
             break;
         default:
             if (isdigit(c)) {
@@ -167,19 +200,30 @@ TokenType Compiler::keyword(string s) {
 }
 
 ASTNodeOp Compiler::arithop(TokenType tok) {
-    switch (tok) {
-        case TokenType::T_Plus:
-            return ASTNodeOp::A_Add;
-        case TokenType::T_Minus:
-            return ASTNodeOp::A_Subtract;
-        case TokenType::T_Star:
-            return ASTNodeOp::A_Multiply;
-        case TokenType::T_Slash:
-            return ASTNodeOp::A_Divide;
-        default:
-            cerr << "Invalid token on line " << line << endl;
-            exit(1);
+    if ((tok > TokenType::T_EOF) && (tok < TokenType::T_IntLit)) {
+        return (ASTNodeOp)tok;
     }
+
+    cerr << "Syntax error, token" << ":" << tok << " on line " << line << endl;
+    exit(1);
+}
+
+int opPrec[] = {
+    0, 10, 10,      // T_EOF, T_Plus, T_Minus
+    20, 20,         // T_Star, T_Slash
+    30, 30,         // T_Equal, T_NotEqual
+    40, 40, 40, 40  // T_LessThan, T_GreaterThan, T_LessEqual, T_GreaterEqual
+};
+
+int Compiler::op_precedence(TokenType tok) {
+    int prec = opPrec[tok];
+
+    if (prec == 0) {
+        cerr << "Syntax error, token" << ":" << tok << " on line " << line << endl;
+        exit(1);
+    }
+
+    return prec;
 }
 
 void Compiler::match(TokenType ttype, string tstr) {
@@ -206,8 +250,7 @@ ASTNode* Compiler::primary() {
     switch (token.type) {
         case TokenType::T_IntLit:
             node = new ASTNode(ASTNodeOp::A_IntLit, (int)token.intValue);
-            scan();
-            return node;
+            break;
         case TokenType::T_Ident:
             id = findglobal(text);
 
@@ -217,41 +260,17 @@ ASTNode* Compiler::primary() {
             }
 
             node = new ASTNode(ASTNodeOp::A_Ident, id);
-            scan();
-            return node;
+            break;
         default:
             cerr << "syntax error on line " << line << endl;
             exit(1);
     }
+
+    scan();
+    return node;
 }
 
-ASTNode* Compiler::expr() {
-    return add_expr();
-}
-
-ASTNode* Compiler::add_expr() {
-    ASTNode* left = mul_expr();
-    TokenType tokenType = token.type;
-
-    if (tokenType == TokenType::T_Semi) {
-        return left;
-    }
-
-    while (true) {
-        scan();
-        ASTNode* right = mul_expr();
-        left = new ASTNode(arithop(tokenType), left, right, 0);
-        tokenType = token.type;
-
-        if (tokenType == TokenType::T_Semi) {
-            break;
-        }
-    }
-
-    return left;
-}
-
-ASTNode* Compiler::mul_expr() {
+ASTNode* Compiler::binexpr(int ptp) {
     ASTNode* left = primary();
     TokenType tokenType = token.type;
 
@@ -259,14 +278,14 @@ ASTNode* Compiler::mul_expr() {
         return left;
     }
 
-    while ((tokenType == TokenType::T_Star) || (tokenType == TokenType::T_Slash)) {
+    while (op_precedence(tokenType) > ptp) {
         scan();
-        ASTNode* right = primary();
+        ASTNode* right = binexpr(opPrec[tokenType]);
         left = new ASTNode(arithop(tokenType), left, right, 0);
         tokenType = token.type;
 
         if (tokenType == TokenType::T_Semi) {
-            break;
+            return left;
         }
     }
 
@@ -296,7 +315,7 @@ void Compiler::statements(IRBuilder<>* builder, FunctionType* printf_type, Funct
 
 void Compiler::print_statement(IRBuilder<>* builder, LLVMContext* context, FunctionType* printf_type, Function* printf_fn) {
     match(TokenType::T_Print, "print");
-    ASTNode* tree = expr();
+    ASTNode* tree = binexpr(0);
     Value* ret_val = buildAST(tree, builder, context);
     generatePrint(builder, ret_val, printf_type, printf_fn, context);
     delete tree;
@@ -320,8 +339,8 @@ void Compiler::assignment_statement(IRBuilder<>* builder, LLVMContext* context) 
     }
 
     ASTNode* right = new ASTNode(ASTNodeOp::A_LVIdent, id);
-    match(T_Equals, "=");
-    ASTNode* left = expr();
+    match(T_Assign, "=");
+    ASTNode* left = binexpr(0);
     ASTNode* tree = new ASTNode(A_Assign, left, right, (int)0);
     buildAST(tree, builder, context);
     delete tree;
@@ -375,6 +394,18 @@ Value* Compiler::buildAST(ASTNode* node, IRBuilder<>* builder, LLVMContext* cont
             return nullptr;
         case ASTNodeOp::A_Ident:
             return builder->CreateLoad(Type::getInt32Ty(*context), get<Value*>(node->value));
+        case ASTNodeOp::A_Equal:
+            return builder->CreateICmpEQ(leftVal, rightVal);
+        case ASTNodeOp::A_NotEqual:
+            return builder->CreateICmpNE(leftVal, rightVal);
+        case ASTNodeOp::A_LessThan:
+            return builder->CreateICmpSLT(leftVal, rightVal);
+        case ASTNodeOp::A_LessEqual:
+            return builder->CreateICmpSLE(leftVal, rightVal);
+        case ASTNodeOp::A_GreaterThan:
+            return builder->CreateICmpSGT(leftVal, rightVal);
+        case ASTNodeOp::A_GreaterEqual:
+            return builder->CreateICmpSGE(leftVal, rightVal);
         default:
             cerr << "unreocnigzed node in ast " << node->op << endl;
             exit(1);

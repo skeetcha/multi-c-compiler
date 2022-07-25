@@ -29,15 +29,15 @@ private:
     string scanident(char c);
     TokenType keyword(string s);
 
+    int op_precedence(TokenType tok);
+
     void match(TokenType ttype, string tstr);
     void semi();
     void ident();
 
     ASTNodeOp arithop(TokenType tok);
     ASTNode* primary();
-    ASTNode* expr();
-    ASTNode* add_expr();
-    ASTNode* mul_expr();
+    ASTNode* binexpr(int ptp);
 
     void statements(IRBuilder<>* builder, FunctionType* printf_type, Function* printf_fn, LLVMContext* context);
     void print_statement(IRBuilder<>* builder, LLVMContext* context, FunctionType* printf_type, Function* printf_fn);
