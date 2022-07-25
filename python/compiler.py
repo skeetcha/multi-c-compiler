@@ -1,3 +1,4 @@
+from ctypes import cdll
 import sys
 from llvmlite import ir
 from llvmlite import binding as llvm
@@ -73,7 +74,37 @@ class Compiler:
         elif c == ';':
             self.token.type = TokenType.Semi
         elif c == '=':
-            self.token.type = TokenType.Equals
+            c = self.next()
+
+            if c == '=':
+                self.token.type = TokenType.Equal
+            else:
+                self.putback = c
+                self.token.type = TokenType.Assign
+        elif c == '!':
+            c = self.next()
+
+            if c == '=':
+                self.token.type = TokenType.NotEqual
+            else:
+                print('Unrecognized character:%s on line %d' % (c, self.line), file=sys.stderr)
+                sys.exit(1)
+        elif c == '<':
+            c = self.next()
+
+            if c == '=':
+                self.token.type = TokenType.LessEqual
+            else:
+                self.putback = c
+                self.token.type = TokenType.LessThan
+        elif c == '>':
+            c = self.next()
+
+            if c == '=':
+                self.token.type = TokenType.GreaterEqual
+            else:
+                self.putback = c
+                self.token.type = TokenType.GreaterThan
         else:
             if c.isdigit():
                 self.token.intValue = self.scanint(c)
@@ -144,63 +175,75 @@ class Compiler:
             return ASTNodeOp.Multiply
         elif tokenType == TokenType.Slash:
             return ASTNodeOp.Divide
+        elif tokenType == TokenType.Equal:
+            return ASTNodeOp.Equal
+        elif tokenType == TokenType.NotEqual:
+            return ASTNodeOp.NotEqual
+        elif tokenType == TokenType.LessThan:
+            return ASTNodeOp.LessThan
+        elif tokenType == TokenType.GreaterThan:
+            return ASTNodeOp.GreaterThan
+        elif tokenType == TokenType.LessEqual:
+            return ASTNodeOp.LessEqual
+        elif tokenType == TokenType.GreaterEqual:
+            return ASTNodeOp.GreaterEqual
         else:
             print('Invalid token on line %d' % self.line, file=sys.stderr)
             sys.exit(1)
     
     def primary(self):
+        node = None
+        id = None
+
         if self.token.type == TokenType.IntLit:
             node = ASTNode.mkAstLeaf(ASTNodeOp.IntLit, self.token.intValue)
-            self.scan()
-            return node
         elif self.token.type == TokenType.Ident:
             id = self.findglobal(self.text)
 
             if id == None:
-                self.fatals('Unknown variable', self.text)
+                print('Unknown variable:%s on line %d' % (self.text, self.line), file=sys.stderr)
+                sys.exit(1)
             
             node = ASTNode.mkAstLeaf(ASTNodeOp.Ident, id)
-            self.scan()
-            return node
         else:
-            self.fatald('Syntax error, token', self.token.type.value)
-    
-    def expr(self):
-        return self.add_expr()
-    
-    def add_expr(self):
-        left = self.mul_expr()
-        tokenType = self.token.type
+            print('Syntax error, token:%d on line %d' % (self.token.type.value, self.line), file=sys.stderr)
+            sys.exit(1)
         
-        if tokenType == TokenType.Semi:
-            return left
-        
-        while True:
-            self.scan()
-            right = self.mul_expr()
-            left = ASTNode(self.arithop(tokenType), left, right, 0)
-            tokenType = self.token.type
-
-            if tokenType == TokenType.Semi:
-                break
-        
-        return left
+        self.scan()
+        return node
     
-    def mul_expr(self):
+    def opPrec(self, tokenType):
+        if tokenType == TokenType.T_EOF:
+            print('Syntax error, token:%d on line %d' % (tokenType.value, self.line), file=sys.stderr)
+            sys.exit(1)
+        elif (tokenType == TokenType.Plus) or (tokenType == TokenType.Minus):
+            return 10
+        elif (tokenType == TokenType.Star) or (tokenType == TokenType.Slash):
+            return 20
+        elif (tokenType == TokenType.Equal) or (tokenType == TokenType.NotEqual):
+            return 30
+        elif (tokenType == TokenType.LessThan) or (tokenType == TokenType.GreaterThan) or (tokenType == TokenType.LessEqual) or (tokenType == TokenType.GreaterEqual):
+            return 40
+    
+    def binexpr(self, ptp):
         left = self.primary()
         tokenType = self.token.type
 
         if tokenType == TokenType.Semi:
             return left
         
-        while (tokenType == TokenType.Star) or (tokenType == TokenType.Slash):
+        op_precedence = self.opPrec(tokenType)
+        
+        while self.opPrec(tokenType) > ptp:
             self.scan()
-            right = self.primary()
+            right = self.binexpr(op_precedence)
             left = ASTNode(self.arithop(tokenType), left, right, 0)
             tokenType = self.token.type
 
             if tokenType == TokenType.Semi:
-                break
+                return left
+            
+            op_precedence = self.opPrec(tokenType)
         
         return left
     
@@ -217,14 +260,6 @@ class Compiler:
     def ident(self):
         self.match(TokenType.Ident, 'identifier')
     
-    def fatald(self, s, d):
-        print('%s:%d on line %d' % (s, d, self.line), file=sys.stderr)
-        sys.exit(1)
-    
-    def fatals(self, s1, s2):
-        print('%s:%s on line %d' % (s1, s2, self.line), file=sys.stderr)
-        sys.exit(1)
-    
     def statements(self):
         while True:
             if self.token.type == TokenType.Print:
@@ -236,11 +271,12 @@ class Compiler:
             elif self.token.type == TokenType.T_EOF:
                 return
             else:
-                self.fatald('Syntax error, token', self.token.type.value)
+                print('Syntax error, token:%d on line %d' % (self.token.type.value, self.line), file=sys.stderr)
+                sys.exit(1)
     
     def print_statement(self):
         self.match(TokenType.Print, 'print')
-        tree = self.expr()
+        tree = self.binexpr(0)
         ret_val = self.buildAST(tree)
         self.print('%d\n\0', ret_val)
         self.semi()
@@ -256,11 +292,12 @@ class Compiler:
         id = self.findglobal(self.text)
 
         if id == None:
-            self.fatals('Undeclared variable', self.text)
+            print('Undeclared variable:%s on line %d' % (self.text, self.line), file=sys.stderr)
+            sys.exit(1)
         
         right = ASTNode.mkAstLeaf(ASTNodeOp.LVIdent, id)
-        self.match(TokenType.Equals, '=')
-        left = self.expr()
+        self.match(TokenType.Assign, '=')
+        left = self.binexpr(0)
         tree = ASTNode(ASTNodeOp.Assign, left, right, 0)
         self.buildAST(tree)
         self.semi()
@@ -298,6 +335,24 @@ class Compiler:
         elif node.op == ASTNodeOp.Assign:
             self.builder.store(leftVal, rightVal)
             return None
+        elif node.op == ASTNodeOp.Equal:
+            val = self.builder.icmp_signed('==', leftVal, rightVal)
+            return self.builder.zext(val, ir.types.IntType(32))
+        elif node.op == ASTNodeOp.NotEqual:
+            val = self.builder.icmp_signed('!=', leftVal, rightVal)
+            return self.builder.zext(val, ir.types.IntType(32))
+        elif node.op == ASTNodeOp.LessThan:
+            val = self.builder.icmp_signed('<', leftVal, rightVal)
+            return self.builder.zext(val, ir.types.IntType(32))
+        elif node.op == ASTNodeOp.GreaterThan:
+            val = self.builder.icmp_signed('>', leftVal, rightVal)
+            return self.builder.zext(val, ir.types.IntType(32))
+        elif node.op == ASTNodeOp.LessEqual:
+            val = self.builder.icmp_signed('<=', leftVal, rightVal)
+            return self.builder.zext(val, ir.types.IntType(32))
+        elif node.op == ASTNodeOp.GreaterEqual:
+            val = self.builder.icmp_signed('>=', leftVal, rightVal)
+            return self.builder.zext(val, ir.types.IntType(32))
         elif node.op == ASTNodeOp.Ident:
             return self.builder.load(node.value)
     
