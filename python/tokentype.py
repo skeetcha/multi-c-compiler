@@ -17,6 +17,12 @@ class TokenType(Enum):
     Semi         = 12
     Assign       = 13
     Ident        = 14
+    LBrace       = 15
+    RBrace       = 16
+    LParen       = 17
+    RParen       = 18
     # Keywords
-    Print        = 15
-    Int          = 16
+    Print        = 19
+    Int          = 20
+    If           = 21
+    Else         = 22

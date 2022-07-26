@@ -18,7 +18,7 @@ class Compiler:
         self.token = Token(TokenType.T_EOF, 0)
         self.module = ir.module.Module()
         self.main = ir.Function(self.module, ir.types.FunctionType(ir.IntType(32), [ir.IntType(32), ir.PointerType(ir.PointerType(ir.IntType(1)))]), name='main')
-        bb_entry = self.main.append_basic_block()
+        bb_entry = self.main.append_basic_block('entry')
         self.builder = ir.builder.IRBuilder()
         self.builder.position_at_end(bb_entry)
         llvm.initialize()
@@ -28,6 +28,7 @@ class Compiler:
         self.printf = ir.Function(self.module, printf_type, name='printf')
         self.text = ''
         self.globals = {}
+        self.label_id = 1
     
     def next(self):
         c = ''
@@ -105,6 +106,14 @@ class Compiler:
             else:
                 self.putback = c
                 self.token.type = TokenType.GreaterThan
+        elif c == '{':
+            self.token.type = TokenType.LBrace
+        elif c == '}':
+            self.token.type = TokenType.RBrace
+        elif c == '(':
+            self.token.type = TokenType.LParen
+        elif c == ')':
+            self.token.type = TokenType.RParen
         else:
             if c.isdigit():
                 self.token.intValue = self.scanint(c)
@@ -157,12 +166,14 @@ class Compiler:
         return buf
     
     def keyword(self, s):
-        if s[0] == 'p':
-            if s == 'print\0':
-                return TokenType.Print
-        elif s[0] == 'i':
-            if s == 'int\0':
-                return TokenType.Int
+        if s == 'print\0':
+            return TokenType.Print
+        elif s == 'int\0':
+            return TokenType.Int
+        elif s == 'if\0':
+            return TokenType.If
+        elif s == 'else\0':
+            return TokenType.Else
         
         return None
     
@@ -229,7 +240,7 @@ class Compiler:
         left = self.primary()
         tokenType = self.token.type
 
-        if tokenType == TokenType.Semi:
+        if (tokenType == TokenType.Semi) or (tokenType == TokenType.RParen):
             return left
         
         op_precedence = self.opPrec(tokenType)
@@ -237,10 +248,10 @@ class Compiler:
         while self.opPrec(tokenType) > ptp:
             self.scan()
             right = self.binexpr(op_precedence)
-            left = ASTNode(self.arithop(tokenType), left, right, 0)
+            left = ASTNode(self.arithop(tokenType), left, None, right, 0)
             tokenType = self.token.type
 
-            if tokenType == TokenType.Semi:
+            if (tokenType == TokenType.Semi) or (tokenType == TokenType.RParen):
                 return left
             
             op_precedence = self.opPrec(tokenType)
@@ -260,26 +271,24 @@ class Compiler:
     def ident(self):
         self.match(TokenType.Ident, 'identifier')
     
-    def statements(self):
-        while True:
-            if self.token.type == TokenType.Print:
-                self.print_statement()
-            elif self.token.type == TokenType.Int:
-                self.var_declaration()
-            elif self.token.type == TokenType.Ident:
-                self.assignment_statement()
-            elif self.token.type == TokenType.T_EOF:
-                return
-            else:
-                print('Syntax error, token:%d on line %d' % (self.token.type.value, self.line), file=sys.stderr)
-                sys.exit(1)
+    def lbrace(self):
+        self.match(TokenType.LBrace, '{')
+    
+    def rbrace(self):
+        self.match(TokenType.RBrace, '}')
+    
+    def lparen(self):
+        self.match(TokenType.LParen, '(')
+    
+    def rparen(self):
+        self.match(TokenType.RParen, ')')
     
     def print_statement(self):
         self.match(TokenType.Print, 'print')
         tree = self.binexpr(0)
-        ret_val = self.buildAST(tree)
-        self.print('%d\n\0', ret_val)
+        tree = ASTNode.mkAstUnary(ASTNodeOp.Print, tree, 0)
         self.semi()
+        return tree
 
     def var_declaration(self):
         self.match(TokenType.Int, 'int')
@@ -298,9 +307,58 @@ class Compiler:
         right = ASTNode.mkAstLeaf(ASTNodeOp.LVIdent, id)
         self.match(TokenType.Assign, '=')
         left = self.binexpr(0)
-        tree = ASTNode(ASTNodeOp.Assign, left, right, 0)
-        self.buildAST(tree)
+        tree = ASTNode(ASTNodeOp.Assign, left, None, right, 0)
         self.semi()
+        return tree
+    
+    def compound_statement(self):
+        left = None
+        tree = None
+        self.lbrace()
+
+        while True:
+            if self.token.type == TokenType.Print:
+                tree = self.print_statement()
+            elif self.token.type == TokenType.Int:
+                self.var_declaration()
+                tree = None
+            elif self.token.type == TokenType.Ident:
+                tree = self.assignment_statement()
+            elif self.token.type == TokenType.If:
+                tree = self.if_statement()
+            elif self.token.type == TokenType.RBrace:
+                self.rbrace()
+                return left
+            else:
+                print('Syntax error, token:%d on line %d' % (self.token.type.value, self.line), file=sys.stderr)
+                sys.exit(1)
+            
+            if tree != None:
+                if left == None:
+                    left = tree
+                else:
+                    left = ASTNode(ASTNodeOp.Glue, left, None, tree, 0)
+    
+    def if_statement(self):
+        condAST = None
+        trueAST = None
+        falseAST = None
+        self.match(TokenType.If, 'if')
+        self.lparen()
+        condAST = self.binexpr(0)
+
+        if (condAST.op < ASTNodeOp.Equal) or (condAST.op > ASTNodeOp.GreaterEqual):
+            print('Bad comparison operator on line %d' % self.line, file=sys.stderr)
+            sys.exit(1)
+        
+        self.rparen()
+        trueAST = self.compound_statement()
+
+        if self.token.type == TokenType.Else:
+            self.scan()
+            falseAST = self.compound_statement()
+        
+        return ASTNode(ASTNodeOp.If, condAST, trueAST, falseAST, 0)
     
     def addglobal(self, text):
         self.globals[text] = self.builder.alloca(ir.types.IntType(32))
@@ -308,15 +366,72 @@ class Compiler:
     def findglobal(self, text):
         return self.globals.get(text)
     
-    def buildAST(self, node):
+    def label(self):
+        id = self.label_id
+        self.label_id += 1
+        return id
+    
+    def buildIfAST(self, node):
+        label_true = str(self.label())
+        label_false = None
+        label_end = str(self.label())
+
+        if node.right != None:
+            label_false = str(self.label())
+
+        comp = self.buildAST(node.left, node.op)
+        trueBlock = self.main.append_basic_block(label_true)
+        falseBlock = None if label_false == None else self.main.append_basic_block(label_false)
+        endBlock = self.main.append_basic_block(label_end)
+        self.builder.cbranch(comp, trueBlock, endBlock if falseBlock == None else falseBlock)
+        self.builder.position_at_end(trueBlock)
+        self.buildAST(node.mid, node.op)
+        self.builder.branch(endBlock)
+        
+        if falseBlock != None:
+            self.builder.position_at_end(falseBlock)
+            self.buildAST(node.right, node.op)
+            self.builder.branch(endBlock)
+
+        self.builder.position_at_end(endBlock)
+        return None
+
+    def getCmpOp(self, op):
+        if op == ASTNodeOp.Equal:
+            return '=='
+        elif op == ASTNodeOp.NotEqual:
+            return '!='
+        elif op == ASTNodeOp.LessThan:
+            return '<'
+        elif op == ASTNodeOp.GreaterThan:
+            return '>'
+        elif op == ASTNodeOp.LessEqual:
+            return '<='
+        elif op == ASTNodeOp.GreaterEqual:
+            return '>='
+        else:
+            print('Invalid op for comparator:%d' % op.value, file=sys.stderr)
+            sys.exit(1)
+    
+    def buildAST(self, node, parentOp):
         leftVal = None
         rightVal = None
 
+        if node == None:
+            return None
+
+        if node.op == ASTNodeOp.If:
+            return self.buildIfAST(node)
+        elif node.op == ASTNodeOp.Glue:
+            self.buildAST(node.left, node.op)
+            self.buildAST(node.right, node.op)
+            return None
+        
         if node.left != None:
-            leftVal = self.buildAST(node.left)
+            leftVal = self.buildAST(node.left, node.op)
         
         if node.right != None:
-            rightVal = self.buildAST(node.right)
+            rightVal = self.buildAST(node.right, node.op)
         
         if node.op == ASTNodeOp.Add:
             return self.builder.add(leftVal, rightVal)
@@ -335,26 +450,17 @@ class Compiler:
         elif node.op == ASTNodeOp.Assign:
             self.builder.store(leftVal, rightVal)
             return None
-        elif node.op == ASTNodeOp.Equal:
-            val = self.builder.icmp_signed('==', leftVal, rightVal)
-            return self.builder.zext(val, ir.types.IntType(32))
-        elif node.op == ASTNodeOp.NotEqual:
-            val = self.builder.icmp_signed('!=', leftVal, rightVal)
-            return self.builder.zext(val, ir.types.IntType(32))
-        elif node.op == ASTNodeOp.LessThan:
-            val = self.builder.icmp_signed('<', leftVal, rightVal)
-            return self.builder.zext(val, ir.types.IntType(32))
-        elif node.op == ASTNodeOp.GreaterThan:
-            val = self.builder.icmp_signed('>', leftVal, rightVal)
-            return self.builder.zext(val, ir.types.IntType(32))
-        elif node.op == ASTNodeOp.LessEqual:
-            val = self.builder.icmp_signed('<=', leftVal, rightVal)
-            return self.builder.zext(val, ir.types.IntType(32))
-        elif node.op == ASTNodeOp.GreaterEqual:
-            val = self.builder.icmp_signed('>=', leftVal, rightVal)
-            return self.builder.zext(val, ir.types.IntType(32))
+        elif (node.op == ASTNodeOp.Equal) or (node.op == ASTNodeOp.NotEqual) or (node.op == ASTNodeOp.LessThan) or (node.op == ASTNodeOp.GreaterThan) or (node.op == ASTNodeOp.LessEqual) or (node.op == ASTNodeOp.GreaterEqual):
+            if parentOp == ASTNodeOp.If:
+                return self.builder.icmp_signed(self.getCmpOp(node.op), leftVal, rightVal)
+            else:
+                val = self.builder.icmp_signed(self.getCmpOp(node.op), leftVal, rightVal)
+                return self.builder.zext(val, ir.types.IntType(32))
         elif node.op == ASTNodeOp.Ident:
             return self.builder.load(node.value)
+        elif node.op == ASTNodeOp.Print:
+            self.print('%d\n\0', self.buildAST(node.left, node.op))
+            return None
     
     def print(self, fmt, *vargs):
         c_fmtString_val = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt)), bytearray(fmt.encode('utf-8')))
@@ -364,7 +470,8 @@ class Compiler:
         self.builder.call(self.printf, [fmt_arg, *vargs])
     
     def parse(self):
-        self.statements()
+        node = self.compound_statement()
+        self.buildAST(node, None)
         retval = self.builder.alloca(ir.IntType(32))
         self.builder.store(ir.Constant(retval.type.pointee, 0), retval)
         retint = self.builder.load(retval)
@@ -372,6 +479,7 @@ class Compiler:
         mod = llvm.parse_assembly(str(self.module))
         mod.triple = llvm.get_default_triple()
         mod.verify()
+        print(str(mod))
         
         target = llvm.Target.from_triple(mod.triple)
 

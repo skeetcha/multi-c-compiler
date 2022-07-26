@@ -15,3 +15,18 @@ class ASTNodeOp(Enum):
     Ident        = 11
     LVIdent      = 12
     Assign       = 13
+    Glue         = 14
+    If           = 15
+    Print        = 16
+    
+    def __lt__(self, o):
+        return self.value < o.value
+    
+    def __le__(self, o):
+        return self.value <= o.value
+    
+    def __gt__(self, o):
+        return self.value > o.value
+    
+    def __ge__(self, o):
+        return self.value >= o.value
